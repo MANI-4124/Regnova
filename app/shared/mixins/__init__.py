@@ -1,5 +1,7 @@
+from .timestamp import TimestampMixin
 from .uuid import UUIDMixin
 
-__all__ = [
+__all__ = (
     "UUIDMixin",
-]
+    "TimestampMixin",
+)
