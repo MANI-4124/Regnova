@@ -1,19 +1,47 @@
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
+
 from fastapi import FastAPI
+
+from app.core.database import build_database
+from app.core.settings import get_settings
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """
+    Application startup and shutdown.
+    """
+
+    settings = get_settings()
+
+    app.state.settings = settings
+    app.state.database = build_database(settings)
+
+    yield
+
+    app.state.database.engine.dispose()
 
 
 def create_app() -> FastAPI:
     """
-    Create and configure the FastAPI application.
+    Create the FastAPI application.
     """
 
+    settings = get_settings()
+
     app = FastAPI(
-        title="Regnova",
-        version="0.1.0",
+        title=settings.app_name,
+        version=settings.app_version,
+        debug=settings.debug,
+        lifespan=lifespan,
     )
 
     @app.get("/")
     def root() -> dict[str, str]:
-        return {"message": "Welcome to Regnova"}
+        return {
+            "message": "Welcome to Regnova"
+        }
 
     return app
 
