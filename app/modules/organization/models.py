@@ -4,12 +4,12 @@ from sqlalchemy import Boolean, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
-from app.shared.mixins import TimestampMixin, UUIDMixin
+from app.shared.mixins import UUIDMixin, TimestampMixin
 
 
 class Organization(UUIDMixin, TimestampMixin, Base):
     """
-    Represents an organization in Regnova.
+    Organization entity.
     """
 
     __tablename__ = "organizations"

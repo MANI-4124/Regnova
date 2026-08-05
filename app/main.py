@@ -1,11 +1,12 @@
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
-
+from app.modules.organization.router import router as organization_router
 from fastapi import FastAPI
+
+
 
 from app.core.database import build_database
 from app.core.settings import get_settings
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -42,7 +43,7 @@ def create_app() -> FastAPI:
         return {
             "message": "Welcome to Regnova"
         }
-
+    app.include_router(organization_router)
     return app
 
 
