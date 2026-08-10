@@ -81,3 +81,9 @@ class Product(
     organization = relationship(
         "Organization",
     )
+
+    versions = relationship(
+        "ProductVersion",
+        back_populates="product",
+        cascade="all, delete-orphan",
+    )
