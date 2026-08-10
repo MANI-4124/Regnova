@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 
-from app.modules.role.models import Role
+from app.modules.role.repository import RoleRepository
 from app.modules.user.models import User
 
 from .exceptions import PermissionDenied
@@ -18,8 +18,8 @@ class RBACService:
         *roles: str,
     ) -> None:
 
-        role = db.get(
-            Role,
+        role = RoleRepository(db).get_by_id(
+            user.organization_id,
             user.role_id,
         )
 

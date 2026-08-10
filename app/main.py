@@ -9,6 +9,7 @@ from app.common.handlers import register_exception_handlers
 from app.core.database import build_database
 from app.core.settings import get_settings
 from app.modules.product.router import router as product_router
+from app.modules.product_version.router import router as product_version_router
 from app.modules.organization.router import router as organization_router
 from app.modules.role.router import router as role_router
 
@@ -47,6 +48,7 @@ def create_app() -> FastAPI:
     app.include_router(user_router)
     app.include_router(auth_router)
     app.include_router(product_router)
+    app.include_router(product_version_router)
     register_exception_handlers(app)
 
     @app.get("/")
@@ -55,9 +57,6 @@ def create_app() -> FastAPI:
             "message": "Welcome to Regnova",
         }
 
-    app.include_router(organization_router)
-    app.include_router(role_router)
-    app.include_router(auth_router)
     return app
 
 
