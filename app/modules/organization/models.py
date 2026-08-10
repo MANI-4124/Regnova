@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from sqlalchemy import Boolean, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 from app.shared.mixins import UUIDMixin, TimestampMixin
@@ -36,3 +36,14 @@ class Organization(UUIDMixin, TimestampMixin, Base):
         nullable=False,
         default=True,
     )
+    
+    roles = relationship(
+    "Role",
+    back_populates="organization",
+    cascade="all, delete-orphan",
+)
+    users = relationship(
+    "User",
+    back_populates="organization",
+    cascade="all, delete-orphan",
+)

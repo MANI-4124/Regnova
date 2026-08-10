@@ -8,18 +8,45 @@ class Settings(BaseSettings):
     Application settings loaded from environment variables.
     """
 
+    # -------------------------------------------------
+    # Application
+    # -------------------------------------------------
+
     app_name: str = "Regnova"
     app_version: str = "0.1.0"
     debug: bool = True
 
     api_prefix: str = "/api/v1"
 
+    # -------------------------------------------------
+    # Database
+    # -------------------------------------------------
+
     database_url: str = (
         "postgresql+psycopg://postgres:postgres@localhost:5432/regnova"
     )
+
     database_echo: bool = False
 
-    secret_key: str = "change-this-secret-key"
+    # -------------------------------------------------
+    # Authentication
+    # -------------------------------------------------
+
+    secret_key: str = (
+        "change-this-secret-key"
+    )
+
+    jwt_algorithm: str = "HS256"
+
+    access_token_expire_minutes: int = 30
+
+    refresh_token_expire_days: int = 7
+
+    bcrypt_rounds: int = 12
+
+    # -------------------------------------------------
+    # Pydantic
+    # -------------------------------------------------
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -5,18 +5,23 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.common.repository import BaseRepository
+
 from .models import Organization
 
 
-class OrganizationRepository:
+class OrganizationRepository(BaseRepository[Organization]):
     """
-    Handles all database operations for Organization.
+    Repository for Organization-specific database operations.
     """
 
     def __init__(self, db: Session):
-        self.db = db
+        super().__init__(db, Organization)
 
     def get_all(self) -> list[Organization]:
+        """
+        Return all organizations ordered by newest first.
+        """
         statement = (
             select(Organization)
             .order_by(Organization.created_at.desc())
@@ -24,40 +29,16 @@ class OrganizationRepository:
 
         return list(self.db.scalars(statement))
 
-    def get_by_id(
+    def get_by_name(
         self,
-        organization_id: UUID,
+        name: str,
     ) -> Organization | None:
-
-        return self.db.get(
-            Organization,
-            organization_id,
+        """
+        Return an organization by its unique name.
+        """
+        statement = (
+            select(Organization)
+            .where(Organization.name == name)
         )
 
-    def create(
-        self,
-        organization: Organization,
-    ) -> Organization:
-
-        self.db.add(organization)
-        self.db.flush()
-        self.db.refresh(organization)
-
-        return organization
-
-    def update(
-        self,
-        organization: Organization,
-    ) -> Organization:
-
-        self.db.flush()
-        self.db.refresh(organization)
-
-        return organization
-
-    def delete(
-        self,
-        organization: Organization,
-    ) -> None:
-
-        self.db.delete(organization)
+        return self.db.scalar(statement)

@@ -4,6 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_db_session
+from app.modules.rbac.dependencies import (
+    require_admin,
+    require_manager,
+)
+from app.modules.user.models import User
 
 from .schemas import (
     OrganizationCreate,
@@ -40,6 +45,7 @@ def get_organizations(
 )
 def get_organization(
     organization_id: UUID,
+    current_user: User = Depends(require_manager),
     service: OrganizationService = Depends(get_organization_service),
 ):
     try:
@@ -54,10 +60,10 @@ def get_organization(
 @router.post(
     "",
     response_model=OrganizationResponse,
-    status_code=status.HTTP_201_CREATED,
 )
 def create_organization(
     payload: OrganizationCreate,
+    current_user: User = Depends(require_admin),
     service: OrganizationService = Depends(get_organization_service),
 ):
     return service.create(payload)
@@ -70,10 +76,14 @@ def create_organization(
 def update_organization(
     organization_id: UUID,
     payload: OrganizationUpdate,
+    current_user: User = Depends(require_admin),
     service: OrganizationService = Depends(get_organization_service),
 ):
     try:
-        return service.update(organization_id, payload)
+        return service.update(
+            organization_id,
+            payload,
+        )
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -87,6 +97,7 @@ def update_organization(
 )
 def delete_organization(
     organization_id: UUID,
+    current_user: User = Depends(require_admin),
     service: OrganizationService = Depends(get_organization_service),
 ):
     try:

@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .exceptions import (
+    OrganizationAlreadyExists,
+    OrganizationNotFound,
+)
 from .models import Organization
 from .repository import OrganizationRepository
 from .schemas import (
@@ -38,7 +43,7 @@ class OrganizationService:
         organization = self.repository.get_by_id(organization_id)
 
         if organization is None:
-            raise ValueError("Organization not found.")
+            raise OrganizationNotFound()
 
         return OrganizationResponse.model_validate(organization)
 
@@ -53,9 +58,15 @@ class OrganizationService:
             country=payload.country,
         )
 
-        organization = self.repository.create(organization)
+        try:
+            organization = self.repository.create(organization)
+            self.db.commit()
 
-        self.db.commit()
+        except IntegrityError:
+            self.db.rollback()
+            raise OrganizationAlreadyExists()
+
+        self.repository.refresh(organization)
 
         return OrganizationResponse.model_validate(organization)
 
@@ -68,16 +79,21 @@ class OrganizationService:
         organization = self.repository.get_by_id(organization_id)
 
         if organization is None:
-            raise ValueError("Organization not found.")
+            raise OrganizationNotFound()
 
         update_data = payload.model_dump(exclude_unset=True)
 
         for field, value in update_data.items():
             setattr(organization, field, value)
 
-        organization = self.repository.update(organization)
+        try:
+            self.db.commit()
 
-        self.db.commit()
+        except IntegrityError:
+            self.db.rollback()
+            raise OrganizationAlreadyExists()
+
+        self.repository.refresh(organization)
 
         return OrganizationResponse.model_validate(organization)
 
@@ -89,8 +105,12 @@ class OrganizationService:
         organization = self.repository.get_by_id(organization_id)
 
         if organization is None:
-            raise ValueError("Organization not found.")
+            raise OrganizationNotFound()
 
-        self.repository.delete(organization)
+        try:
+            self.repository.delete(organization)
+            self.db.commit()
 
-        self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
