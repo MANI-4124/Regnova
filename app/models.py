@@ -7,6 +7,11 @@ from app.modules.audit.models import OutboxEvent
 from app.modules.source.models import Source
 from app.modules.source_version.models import SourceVersion
 from app.modules.source_location.models import SourceLocation
+from app.modules.requirement.models import Requirement
+from app.modules.requirement_version.models import (
+    RequirementVersion,
+    RequirementVersionSourceLocation,
+)
 # migrations/env.py
 
 import app.models
@@ -20,4 +25,7 @@ __all__ = [
     "Source",
     "SourceVersion",
     "SourceLocation",
+    "Requirement",
+    "RequirementVersion",
+    "RequirementVersionSourceLocation",
 ]

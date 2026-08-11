@@ -16,6 +16,8 @@ from app.modules.role.router import router as role_router
 from app.modules.source.router import router as source_router
 from app.modules.source_version.router import router as source_version_router
 from app.modules.source_location.router import router as source_location_router
+from app.modules.requirement.router import router as requirement_router
+from app.modules.requirement_version.router import router as requirement_version_router
 
 
 @asynccontextmanager
@@ -57,6 +59,8 @@ def create_app() -> FastAPI:
     app.include_router(source_router)
     app.include_router(source_version_router)
     app.include_router(source_location_router)
+    app.include_router(requirement_router)
+    app.include_router(requirement_version_router)
     register_exception_handlers(app)
 
     @app.get("/")
