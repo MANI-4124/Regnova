@@ -3,7 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_db_session
+from app.core.dependencies import get_correlation_id, get_db_session
 from app.modules.rbac.dependencies import (
     require_admin,
     require_manager,
@@ -64,9 +64,14 @@ def get_organization(
 def create_organization(
     payload: OrganizationCreate,
     current_user: User = Depends(require_admin),
+    correlation_id: str = Depends(get_correlation_id),
     service: OrganizationService = Depends(get_organization_service),
 ):
-    return service.create(payload)
+    return service.create(
+        payload,
+        correlation_id=correlation_id,
+        actor_user_id=current_user.id,
+    )
 
 
 @router.put(

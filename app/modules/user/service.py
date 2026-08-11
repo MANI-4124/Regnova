@@ -5,6 +5,8 @@ from uuid import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.modules.audit.repository import OutboxRepository
+
 from .exceptions import (
     UserAlreadyExists,
     UserNotFound,
@@ -26,6 +28,7 @@ class UserService:
     ):
         self.db = db
         self.repository = UserRepository(db)
+        self.outbox = OutboxRepository(db)
 
     def get_all(
         self,
@@ -61,6 +64,8 @@ class UserService:
         self,
         organization_id: UUID,
         payload: UserCreate,
+        correlation_id: str | None = None,
+        actor_user_id: UUID | None = None,
     ) -> UserResponse:
 
         if self.repository.get_by_email(
@@ -82,6 +87,21 @@ password_hash=hash_password(payload.password),
 
         try:
             user = self.repository.create(user)
+
+            self.outbox.append(
+                organization_id=organization_id,
+                event_type="MembershipChanged",
+                schema_version=1,
+                payload={
+                    "user_id": str(user.id),
+                    "organization_id": str(organization_id),
+                    "role_id": str(user.role_id),
+                    "change": "created",
+                },
+                correlation_id=correlation_id,
+                actor_user_id=actor_user_id,
+            )
+
             self.db.commit()
 
         except IntegrityError:
@@ -97,6 +117,8 @@ password_hash=hash_password(payload.password),
         organization_id: UUID,
         user_id: UUID,
         payload: UserUpdate,
+        correlation_id: str | None = None,
+        actor_user_id: UUID | None = None,
     ) -> UserResponse:
 
         user = self.repository.get_by_id(
@@ -111,8 +133,28 @@ password_hash=hash_password(payload.password),
             exclude_unset=True,
         )
 
+        membership_changed = bool(
+            {"role_id", "is_active"} & update_data.keys()
+        )
+
         for field, value in update_data.items():
             setattr(user, field, value)
+
+        if membership_changed:
+            self.outbox.append(
+                organization_id=organization_id,
+                event_type="MembershipChanged",
+                schema_version=1,
+                payload={
+                    "user_id": str(user.id),
+                    "organization_id": str(organization_id),
+                    "role_id": str(user.role_id),
+                    "is_active": user.is_active,
+                    "change": "updated",
+                },
+                correlation_id=correlation_id,
+                actor_user_id=actor_user_id,
+            )
 
         self.db.commit()
 
@@ -124,6 +166,8 @@ password_hash=hash_password(payload.password),
         self,
         organization_id: UUID,
         user_id: UUID,
+        correlation_id: str | None = None,
+        actor_user_id: UUID | None = None,
     ) -> None:
 
         user = self.repository.get_by_id(
@@ -133,6 +177,19 @@ password_hash=hash_password(payload.password),
 
         if user is None:
             raise UserNotFound()
+
+        self.outbox.append(
+            organization_id=organization_id,
+            event_type="MembershipChanged",
+            schema_version=1,
+            payload={
+                "user_id": str(user.id),
+                "organization_id": str(organization_id),
+                "change": "revoked",
+            },
+            correlation_id=correlation_id,
+            actor_user_id=actor_user_id,
+        )
 
         self.repository.delete(user)
 

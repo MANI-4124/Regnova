@@ -5,6 +5,8 @@ from uuid import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.modules.audit.repository import OutboxRepository
+
 from .exceptions import (
     OrganizationAlreadyExists,
     OrganizationNotFound,
@@ -26,6 +28,7 @@ class OrganizationService:
     def __init__(self, db: Session):
         self.db = db
         self.repository = OrganizationRepository(db)
+        self.outbox = OutboxRepository(db)
 
     def get_all(self) -> list[OrganizationResponse]:
         organizations = self.repository.get_all()
@@ -50,6 +53,8 @@ class OrganizationService:
     def create(
         self,
         payload: OrganizationCreate,
+        correlation_id: str | None = None,
+        actor_user_id: UUID | None = None,
     ) -> OrganizationResponse:
 
         organization = Organization(
@@ -60,6 +65,19 @@ class OrganizationService:
 
         try:
             organization = self.repository.create(organization)
+
+            self.outbox.append(
+                organization_id=organization.id,
+                event_type="WorkspaceActivated",
+                schema_version=1,
+                payload={
+                    "organization_id": str(organization.id),
+                    "name": organization.name,
+                },
+                correlation_id=correlation_id,
+                actor_user_id=actor_user_id,
+            )
+
             self.db.commit()
 
         except IntegrityError:

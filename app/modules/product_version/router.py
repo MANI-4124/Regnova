@@ -3,7 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_db_session
+from app.core.dependencies import get_correlation_id, get_db_session
 from app.modules.rbac.dependencies import (
     require_admin,
     require_manager,
@@ -146,3 +146,25 @@ def delete_product_version(
     return {
         "message": "Product version deleted successfully."
     }
+
+
+@router.post(
+    "/{version_id}/publish",
+    response_model=ProductVersionResponse,
+)
+def publish_product_version(
+    product_id: UUID,
+    version_id: UUID,
+    current_user: User = Depends(require_admin),
+    correlation_id: str = Depends(get_correlation_id),
+    service: ProductVersionService = Depends(
+        get_product_version_service,
+    ),
+):
+    return service.publish(
+        current_user.organization_id,
+        product_id,
+        version_id,
+        correlation_id=correlation_id,
+        actor_user_id=current_user.id,
+    )

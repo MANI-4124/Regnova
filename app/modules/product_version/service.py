@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.modules.audit.repository import OutboxRepository
 from app.modules.product.exceptions import ProductNotFound
 from app.modules.product.repository import ProductRepository
 
 from .exceptions import (
     ProductVersionAlreadyExists,
+    ProductVersionAlreadyPublished,
     ProductVersionNotFound,
 )
 from .models import ProductVersion, ProductVersionStatus
@@ -33,6 +36,9 @@ class ProductVersionService:
             db,
         )
         self.products = ProductRepository(
+            db,
+        )
+        self.outbox = OutboxRepository(
             db,
         )
 
@@ -199,3 +205,45 @@ class ProductVersionService:
         )
 
         self.db.commit()
+
+    def publish(
+        self,
+        organization_id: UUID,
+        product_id: UUID,
+        version_id: UUID,
+        correlation_id: str | None = None,
+        actor_user_id: UUID | None = None,
+    ) -> ProductVersion:
+
+        version = self.get_by_id(
+            organization_id,
+            product_id,
+            version_id,
+        )
+
+        if version.released_at is not None:
+            raise ProductVersionAlreadyPublished()
+
+        version.released_at = datetime.now(timezone.utc)
+
+        self.repository.update(
+            version,
+        )
+
+        self.outbox.append(
+            organization_id=organization_id,
+            event_type="ProductVersionPublished",
+            schema_version=1,
+            payload={
+                "product_id": str(product_id),
+                "product_version_id": str(version.id),
+                "version": version.version,
+                # delta omitted - FR-02 version-compare isn't built yet
+            },
+            correlation_id=correlation_id,
+            actor_user_id=actor_user_id,
+        )
+
+        self.db.commit()
+
+        return version

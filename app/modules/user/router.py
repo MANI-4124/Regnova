@@ -3,7 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends,HTTPException
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_db_session
+from app.core.dependencies import get_correlation_id, get_db_session
 from app.modules.rbac.dependencies import (
     require_admin,
     require_manager,
@@ -61,11 +61,14 @@ def get_user(
 def create_user(
     payload: UserCreate,
     current_user: User = Depends(require_admin),
+    correlation_id: str = Depends(get_correlation_id),
     service: UserService = Depends(get_user_service),
 ):
     return service.create(
         current_user.organization_id,
         payload,
+        correlation_id=correlation_id,
+        actor_user_id=current_user.id,
     )
 
 
@@ -77,12 +80,15 @@ def update_user(
     user_id: UUID,
     payload: UserUpdate,
     current_user: User = Depends(require_admin),
+    correlation_id: str = Depends(get_correlation_id),
     service: UserService = Depends(get_user_service),
 ):
     return service.update(
         current_user.organization_id,
         user_id,
         payload,
+        correlation_id=correlation_id,
+        actor_user_id=current_user.id,
     )
 
 
@@ -90,6 +96,7 @@ def update_user(
 def delete_user(
     user_id: UUID,
     current_user: User = Depends(require_admin),
+    correlation_id: str = Depends(get_correlation_id),
     service: UserService = Depends(get_user_service),
 ):
     if current_user.id == user_id:
@@ -101,6 +108,8 @@ def delete_user(
     service.delete(
         current_user.organization_id,
         user_id,
+        correlation_id=correlation_id,
+        actor_user_id=current_user.id,
     )
 
     return {
