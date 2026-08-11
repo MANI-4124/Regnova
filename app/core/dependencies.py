@@ -1,3 +1,4 @@
+import uuid
 from collections.abc import Generator
 
 from fastapi import Request
@@ -17,3 +18,18 @@ def get_db_session(
         yield session
     finally:
         session.close()
+
+
+def get_correlation_id(
+    request: Request,
+) -> str:
+    """
+    Returns the correlation ID stashed on request.state by
+    CorrelationIdMiddleware.
+    """
+
+    return getattr(
+        request.state,
+        "correlation_id",
+        None,
+    ) or str(uuid.uuid4())
