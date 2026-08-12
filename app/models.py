@@ -23,6 +23,7 @@ from app.modules.regulatory_basis_release.models import (
     RegulatoryBasisReleaseRequirementVersion,
     RegulatoryBasisReleaseRuleVersion,
 )
+from app.modules.product_market_state.models import ProductMarketState
 # migrations/env.py
 
 import app.models
@@ -46,4 +47,5 @@ __all__ = [
     "RegulatoryBasisReleaseSourceVersion",
     "RegulatoryBasisReleaseRequirementVersion",
     "RegulatoryBasisReleaseRuleVersion",
+    "ProductMarketState",
 ]
