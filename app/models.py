@@ -17,6 +17,12 @@ from app.modules.rule_version.models import (
     RuleVersion,
     RuleVersionSourceLocation,
 )
+from app.modules.regulatory_basis_release.models import (
+    RegulatoryBasisRelease,
+    RegulatoryBasisReleaseSourceVersion,
+    RegulatoryBasisReleaseRequirementVersion,
+    RegulatoryBasisReleaseRuleVersion,
+)
 # migrations/env.py
 
 import app.models
@@ -36,4 +42,8 @@ __all__ = [
     "Rule",
     "RuleVersion",
     "RuleVersionSourceLocation",
+    "RegulatoryBasisRelease",
+    "RegulatoryBasisReleaseSourceVersion",
+    "RegulatoryBasisReleaseRequirementVersion",
+    "RegulatoryBasisReleaseRuleVersion",
 ]

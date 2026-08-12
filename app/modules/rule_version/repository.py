@@ -42,3 +42,11 @@ class RuleVersionRepository(BaseRepository[RuleVersion]):
         )
 
         return self.db.scalar(statement)
+
+    def get_by_id_only(self, version_id: UUID) -> RuleVersion | None:
+        """
+        Unscoped lookup by id alone - used by regulatory_basis_release,
+        which only ever receives rule_version_id, not the parent
+        rule_id.
+        """
+        return super().get_by_id(version_id)

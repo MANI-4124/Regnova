@@ -20,6 +20,7 @@ from app.modules.requirement.router import router as requirement_router
 from app.modules.requirement_version.router import router as requirement_version_router
 from app.modules.rule.router import router as rule_router
 from app.modules.rule_version.router import router as rule_version_router
+from app.modules.regulatory_basis_release.router import router as regulatory_basis_release_router
 
 
 @asynccontextmanager
@@ -65,6 +66,7 @@ def create_app() -> FastAPI:
     app.include_router(requirement_version_router)
     app.include_router(rule_router)
     app.include_router(rule_version_router)
+    app.include_router(regulatory_basis_release_router)
     register_exception_handlers(app)
 
     @app.get("/")
