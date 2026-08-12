@@ -20,6 +20,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.common.enums import UnknownBehavior
 from app.core.database import Base
 from app.shared.mixins.timestamp import TimestampMixin
 from app.shared.mixins.uuid import UUIDMixin
@@ -43,12 +44,6 @@ class RequirementDimension(str, Enum):
     TESTING = "TESTING"
     REPRESENTATION = "REPRESENTATION"
     REGISTRATION_READINESS = "REGISTRATION_READINESS"
-
-
-class UnknownBehavior(str, Enum):
-    FAIL_CLOSED = "FAIL_CLOSED"
-    REQUEST_INPUT = "REQUEST_INPUT"
-    HUMAN_REVIEW = "HUMAN_REVIEW"
 
 
 class RequirementSeverity(str, Enum):

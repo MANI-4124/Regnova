@@ -11,6 +11,7 @@ from .exceptions import (
     ValidationException,
 )
 
+from .enums import UnknownBehavior
 from .repository import BaseRepository
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "ConflictException",
     "NotFoundException",
     "ValidationException",
+    "UnknownBehavior",
     "BaseRepository",
 ]
 from .responses import ApiResponse

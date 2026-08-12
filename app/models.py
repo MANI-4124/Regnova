@@ -12,6 +12,11 @@ from app.modules.requirement_version.models import (
     RequirementVersion,
     RequirementVersionSourceLocation,
 )
+from app.modules.rule.models import Rule
+from app.modules.rule_version.models import (
+    RuleVersion,
+    RuleVersionSourceLocation,
+)
 # migrations/env.py
 
 import app.models
@@ -28,4 +33,7 @@ __all__ = [
     "Requirement",
     "RequirementVersion",
     "RequirementVersionSourceLocation",
+    "Rule",
+    "RuleVersion",
+    "RuleVersionSourceLocation",
 ]

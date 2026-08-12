@@ -1,0 +1,141 @@
+from __future__ import annotations
+
+from uuid import UUID
+
+from sqlalchemy.orm import Session
+
+from app.modules.requirement_version.exceptions import RequirementVersionNotFound
+from app.modules.requirement_version.repository import RequirementVersionRepository
+from app.modules.rule.exceptions import RuleNotFound
+from app.modules.rule.repository import RuleRepository
+from app.modules.source_location.exceptions import SourceLocationNotFound
+from app.modules.source_location.repository import SourceLocationRepository
+
+from .exceptions import RuleVersionNotFound
+from .models import RuleVersion
+from .repository import RuleVersionRepository
+from .schemas import (
+    RuleVersionCreate,
+    RuleVersionUpdate,
+)
+
+
+class RuleVersionService:
+    """
+    Rule version service.
+    """
+
+    def __init__(self, db: Session):
+        self.db = db
+        self.repository = RuleVersionRepository(db)
+        self.rules = RuleRepository(db)
+        self.requirement_versions = RequirementVersionRepository(db)
+        self.source_locations = SourceLocationRepository(db)
+
+    def _get_rule_or_404(self, rule_id: UUID):
+        rule = self.rules.get_by_id(rule_id)
+
+        if rule is None:
+            raise RuleNotFound()
+
+        return rule
+
+    def _validate_requirement_version(
+        self,
+        requirement_version_id: UUID | None,
+    ) -> None:
+        if requirement_version_id is None:
+            return
+
+        version = self.requirement_versions.get_by_id_only(
+            requirement_version_id,
+        )
+
+        if version is None:
+            raise RequirementVersionNotFound()
+
+    def _resolve_source_locations(self, source_location_ids: list[UUID]):
+        locations = []
+
+        for location_id in source_location_ids:
+            location = self.source_locations.get_by_id(location_id)
+
+            if location is None:
+                raise SourceLocationNotFound()
+
+            locations.append(location)
+
+        return locations
+
+    def get_all(self, rule_id: UUID) -> list[RuleVersion]:
+        self._get_rule_or_404(rule_id)
+
+        return self.repository.get_all(rule_id)
+
+    def get_by_id(self, rule_id: UUID, version_id: UUID) -> RuleVersion:
+        self._get_rule_or_404(rule_id)
+
+        version = self.repository.get_by_id(rule_id, version_id)
+
+        if version is None:
+            raise RuleVersionNotFound()
+
+        return version
+
+    def create(
+        self,
+        rule_id: UUID,
+        payload: RuleVersionCreate,
+    ) -> RuleVersion:
+        self._get_rule_or_404(rule_id)
+        self._validate_requirement_version(payload.requirement_version_id)
+
+        data = payload.model_dump(
+            exclude_unset=True,
+            exclude={"source_location_ids"},
+        )
+
+        version = RuleVersion(
+            rule_id=rule_id,
+            **data,
+        )
+
+        if payload.source_location_ids:
+            version.source_locations = self._resolve_source_locations(
+                payload.source_location_ids,
+            )
+
+        self.repository.create(version)
+        self.db.commit()
+
+        return version
+
+    def update(
+        self,
+        rule_id: UUID,
+        version_id: UUID,
+        payload: RuleVersionUpdate,
+    ) -> RuleVersion:
+        version = self.get_by_id(rule_id, version_id)
+
+        if "requirement_version_id" in payload.model_fields_set:
+            self._validate_requirement_version(
+                payload.requirement_version_id,
+            )
+
+        data = payload.model_dump(
+            exclude_unset=True,
+            exclude={"source_location_ids"},
+        )
+
+        for field, value in data.items():
+            setattr(version, field, value)
+
+        if "source_location_ids" in payload.model_fields_set:
+            ids = payload.source_location_ids or []
+            version.source_locations = self._resolve_source_locations(ids)
+
+        self.repository.update(version)
+        self.db.commit()
+
+        return version

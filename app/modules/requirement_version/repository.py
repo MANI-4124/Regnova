@@ -42,3 +42,11 @@ class RequirementVersionRepository(BaseRepository[RequirementVersion]):
         )
 
         return self.db.scalar(statement)
+
+    def get_by_id_only(self, version_id: UUID) -> RequirementVersion | None:
+        """
+        Unscoped lookup by id alone - used by rule_version, which only
+        ever receives requirement_version_id, not the parent
+        requirement_id.
+        """
+        return super().get_by_id(version_id)
