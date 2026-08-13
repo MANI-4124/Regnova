@@ -53,6 +53,23 @@ class ProductMarketStateRepository(BaseRepository[ProductMarketState]):
 
         return self.db.scalar(statement)
 
+    def get_by_id_only(
+        self,
+        organization_id: UUID,
+        state_id: UUID,
+    ) -> ProductMarketState | None:
+        """
+        Org-scoped lookup by id alone, no product_id - used by finding
+        and assessment_run, which only ever receive
+        product_market_state_id (flat routes), not the parent product_id.
+        """
+        statement = select(ProductMarketState).where(
+            ProductMarketState.id == state_id,
+            ProductMarketState.organization_id == organization_id,
+        )
+
+        return self.db.scalar(statement)
+
     def get_active_for_product_market(
         self,
         organization_id: UUID,

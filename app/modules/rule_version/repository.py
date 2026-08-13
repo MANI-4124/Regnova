@@ -6,8 +6,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.common.repository import BaseRepository
+from app.modules.requirement_version.models import RequirementVersion
 
-from .models import RuleVersion
+from .models import RuleVersion, RuleVersionStatus
 
 
 class RuleVersionRepository(BaseRepository[RuleVersion]):
@@ -50,3 +51,37 @@ class RuleVersionRepository(BaseRepository[RuleVersion]):
         rule_id.
         """
         return super().get_by_id(version_id)
+
+    def get_verified_active_for_dimension(
+        self,
+        dimension: str,
+        included_rule_version_ids: list[UUID],
+    ) -> list[RuleVersion]:
+        """
+        Rule selection for a StepRun (C6: "Only Verified + Active Rule
+        Versions in the pinned Regulatory Basis Release may drive
+        deterministic production outcomes") - ACTIVE, verified_at set,
+        linked to a RequirementVersion in this dimension, and included
+        in the release's rule_version_ids. An empty
+        included_rule_version_ids always yields no rows (IN () is not
+        portable across dialects, so this is short-circuited).
+        """
+
+        if not included_rule_version_ids:
+            return []
+
+        statement = (
+            select(RuleVersion)
+            .join(
+                RequirementVersion,
+                RequirementVersion.id == RuleVersion.requirement_version_id,
+            )
+            .where(
+                RuleVersion.id.in_(included_rule_version_ids),
+                RuleVersion.status == RuleVersionStatus.ACTIVE.value,
+                RuleVersion.verified_at.is_not(None),
+                RequirementVersion.dimension == dimension,
+            )
+        )
+
+        return list(self.db.scalars(statement))
