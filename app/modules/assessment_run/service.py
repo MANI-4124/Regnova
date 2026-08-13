@@ -37,7 +37,7 @@ from .models import (
 from .repository import AssessmentRunRepository, DimensionAssessmentRepository, StepRunRepository
 from .schemas import AssessmentRunCreate
 
-SUPPORTED_DIMENSIONS = frozenset({"CLAIMS"})
+SUPPORTED_DIMENSIONS = frozenset({"CLAIMS", "LABEL"})
 
 
 class AssessmentRunService:
@@ -155,14 +155,26 @@ class AssessmentRunService:
         )
 
         product_facts = dimension_facts.get("product", {})
-        claims = dimension_facts.get("claims", [])
+        # Subject-collection key stays dimension-specific ("claims" vs
+        # "label_fields") rather than a unified "items" key - confirmed
+        # explicitly rather than touching the already-shipped Claims
+        # contract.
+        if dimension == "LABEL":
+            subjects = [
+                self._build_label_field_facts(item)
+                for item in dimension_facts.get("label_fields", [])
+            ]
+            subject_key_field = "field_key"
+        else:
+            subjects = dimension_facts.get("claims", [])
+            subject_key_field = "claim_id"
 
-        for claim in claims:
-            subject_key = claim.get("claim_id")
-            claim_facts = {"product": product_facts, **claim}
+        for subject in subjects:
+            subject_key = subject.get(subject_key_field)
+            subject_facts = {"product": product_facts, **subject}
 
             for rule_version in rule_versions:
-                self._run_step(run, dimension, rule_version, subject_key, claim_facts)
+                self._run_step(run, dimension, rule_version, subject_key, subject_facts)
 
         state = self._derive_dimension_state(run.id, dimension)
         assessment = DimensionAssessment(
@@ -172,6 +184,38 @@ class AssessmentRunService:
         )
         self.dimension_assessments.create(assessment)
         self.db.commit()
+
+    def _build_label_field_facts(self, item: dict[str, Any]) -> dict[str, Any]:
+        """
+        A caller-supplied label_fields[] item is {field_key, value,
+        confidence, location} - flat, matching how the request payload
+        is documented. The engine's confidence gate only fires when a
+        condition leaf resolves directly onto a {"value", "confidence"}
+        wrapper (see app.engine.condition_evaluator), so value/confidence
+        get nested under a fixed "extracted" key here - Label rule
+        conditions reference "extracted" as the field to get confidence
+        gating; "field_key"/"location" stay top-level for subject_key
+        and Finding.observed_location respectively. This nesting is an
+        internal wire-format detail, not part of the request payload.
+
+        A null value (nothing extracted for this field at all) omits
+        "extracted" entirely rather than building a wrapper around a
+        null - otherwise the field would always structurally "exist"
+        (as a null-valued wrapper) even when the mandatory check is
+        exactly that nothing was found, making not_exists/missing-field
+        UNKNOWN handling unreachable for the one case Label needs them
+        most.
+        """
+
+        facts: dict[str, Any] = {
+            "field_key": item.get("field_key"),
+            "location": item.get("location"),
+        }
+
+        if item.get("value") is not None:
+            facts["extracted"] = {"value": item.get("value"), "confidence": item.get("confidence")}
+
+        return facts
 
     def _run_step(
         self,
@@ -209,21 +253,32 @@ class AssessmentRunService:
             return
 
         step.outcome = result.outcome
+        step.unknown_reason = result.unknown_reason
         step.trace = result.trace
         self.step_runs.create(step)
         self.db.commit()
 
         self._apply_output(run, rule_version, step, result, facts)
 
+    def _effective_unknown_behavior(self, result, rule_version) -> str:
+        if result.unknown_reason == "low_confidence":
+            # Hard-pinned per AC-FR-06-02 - low-confidence OCR must never
+            # silently pass a mandatory check, regardless of what this
+            # rule's own unknown_behavior declares. Confirmed explicitly
+            # rather than leaving it rule-configurable.
+            return UnknownBehavior.HUMAN_REVIEW.value
+        return rule_version.unknown_behavior
+
     def _apply_output(self, run, rule_version, step, result, facts) -> None:
         output_type = rule_version.output_type
+        effective_unknown_behavior = self._effective_unknown_behavior(result, rule_version)
 
         if output_type == RuleOutputType.APPLICABILITY.value:
-            outcome = self._resolve_applicability_outcome(result, rule_version.unknown_behavior)
+            outcome = self._resolve_applicability_outcome(result, effective_unknown_behavior)
             self._create_requirement_result(run, rule_version, step, output_type, outcome, facts)
 
         elif output_type == RuleOutputType.REQUIREMENT_RESULT.value:
-            outcome = self._resolve_satisfaction_outcome(result, rule_version.unknown_behavior)
+            outcome = self._resolve_satisfaction_outcome(result, effective_unknown_behavior)
             self._create_requirement_result(run, rule_version, step, output_type, outcome, facts)
 
         elif output_type == RuleOutputType.FINDING_PROPOSAL.value:
@@ -284,17 +339,27 @@ class AssessmentRunService:
         self.db.commit()
 
     def _maybe_propose_finding(self, run, rule_version, step, result, facts) -> None:
-        unknown_behavior = rule_version.unknown_behavior
-
         if result.outcome == "MATCH":
             rationale = f"Condition matched: {self._trace_summary(result.trace)}"
         elif result.outcome == "UNKNOWN":
-            if unknown_behavior == UnknownBehavior.FAIL_CLOSED.value:
+            if result.unknown_reason == "low_confidence":
+                # Hard-pinned per AC-FR-06-02, regardless of what this
+                # rule's own unknown_behavior declares - see
+                # _effective_unknown_behavior. Internal/RA-facing text,
+                # not customer-facing (same split as RequirementVersion's
+                # canonical_statement/customer_safe_explanation).
+                rationale = (
+                    f"{self._low_confidence_summary(result.trace)} - routed to "
+                    "human review per AC-FR-06-02 (low-confidence OCR must "
+                    "never silently pass a mandatory check), overriding this "
+                    f"rule's own unknown_behavior ({rule_version.unknown_behavior})."
+                )
+            elif rule_version.unknown_behavior == UnknownBehavior.FAIL_CLOSED.value:
                 rationale = (
                     "Required input missing; proposed under fail-closed "
                     "unknown-behavior policy rather than silently passing."
                 )
-            elif unknown_behavior == UnknownBehavior.HUMAN_REVIEW.value:
+            elif rule_version.unknown_behavior == UnknownBehavior.HUMAN_REVIEW.value:
                 rationale = (
                     "Required input missing; escalated to human review "
                     "per this rule's unknown-behavior policy."
@@ -326,6 +391,7 @@ class AssessmentRunService:
             subject_key=step.subject_key,
             issue_type=issue_type,
             observed_value=self._observed_value(facts),
+            observed_location=facts.get("location"),
             severity=severity,
             hard_gate_effect=hard_gate_effect,
             rationale=rationale,
@@ -336,7 +402,22 @@ class AssessmentRunService:
         wording = facts.get("wording")
         if isinstance(wording, str):
             return wording
+
+        extracted = facts.get("extracted")
+        if isinstance(extracted, dict) and "value" in extracted:
+            return json.dumps(extracted["value"], default=str)
+
         return json.dumps(facts, sort_keys=True, default=str)
+
+    def _low_confidence_summary(self, trace: list[dict]) -> str:
+        entries = [entry for entry in trace if entry.get("reason") == "low_confidence"]
+        if not entries:
+            return "Extraction confidence below required threshold"
+
+        return "; ".join(
+            f"{entry['field']} confidence {entry['confidence']:.2f} below required threshold"
+            for entry in entries
+        )
 
     def _trace_summary(self, trace: list[dict]) -> str:
         return "; ".join(
@@ -374,8 +455,14 @@ class AssessmentRunService:
 
         unknown_steps = [s for s in steps if s.outcome == "UNKNOWN"]
 
+        # low_confidence is hard-pinned to HUMAN_REVIEW_REQUIRED (AC-FR-06-02)
+        # regardless of what the step's own rule declares - checked
+        # directly on the step, not via a rule-lookup, since the rule's
+        # declared unknown_behavior might say something else entirely
+        # (FAIL_CLOSED/REQUEST_INPUT) and still be overridden here.
         human_review = engine_errored or any(
-            self._unknown_reason_for_rule(s.rule_version_id) == UnknownBehavior.HUMAN_REVIEW.value
+            s.unknown_reason == "low_confidence"
+            or self._unknown_reason_for_rule(s.rule_version_id) == UnknownBehavior.HUMAN_REVIEW.value
             for s in unknown_steps
         )
         if human_review:

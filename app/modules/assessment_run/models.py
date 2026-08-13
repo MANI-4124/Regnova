@@ -213,6 +213,19 @@ class StepRun(
         nullable=True,
     )
 
+    # Only set when outcome == "UNKNOWN" - "missing" (a referenced field
+    # was absent) or "low_confidence" (present but below its confidence
+    # threshold, e.g. Label's OCR-extracted fields). A real queryable
+    # column, not just embedded in trace JSON - DimensionAssessment's
+    # state derivation needs to distinguish the two per-step to apply
+    # the AC-FR-06-02 hard-pin (low_confidence always forces HUMAN_REVIEW
+    # regardless of the rule's own unknown_behavior) without re-parsing
+    # trace. See CLAUDE.md "Assessment engine".
+    unknown_reason: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+    )
+
     trace: Mapped[list[Any] | None] = mapped_column(
         _JSON,
         nullable=True,

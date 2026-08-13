@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.engine import evaluate_condition
+from app.engine import DEFAULT_MIN_CONFIDENCE, evaluate_condition
 from app.engine.condition_evaluator import (
     UnknownNormalizeFunction,
     UnrecognizedConditionOperator,
@@ -260,3 +260,122 @@ class TestAgainstSyntheticRuleVersionTestFixtures:
         for fixture in test_fixtures:
             result = evaluate_condition(condition, fixture["input_facts"])
             assert result.outcome == fixture["expected_output"], fixture
+
+
+class TestConfidenceGating:
+    """
+    Label's OCR-extracted facts arrive as {"value", "confidence"}
+    wrappers instead of Claims' plain scalars - these tests validate the
+    generic (not Label-specific) engine mechanism that makes AC-FR-06-02
+    possible: a field present but below its confidence threshold
+    resolves UNKNOWN with reason="low_confidence", same outcome as a
+    missing field but distinguishable in the trace.
+    """
+
+    def test_confidence_wrapped_value_above_threshold_compares_normally(self):
+        result = evaluate_condition(
+            {"op": "equals", "field": "extracted", "value": "50 mL"},
+            {"extracted": {"value": "50 mL", "confidence": 0.92}},
+        )
+        assert result.outcome == "MATCH"
+        assert result.unknown_reason is None
+
+    def test_confidence_wrapped_value_below_default_threshold_is_unknown(self):
+        result = evaluate_condition(
+            {"op": "equals", "field": "extracted", "value": "50 mL"},
+            {"extracted": {"value": "50 mL", "confidence": 0.31}},
+        )
+        assert result.outcome == "UNKNOWN"
+        assert result.unknown_reason == "low_confidence"
+        assert result.missing_fields == ["extracted"]
+
+        entry = result.trace[0]
+        assert entry["reason"] == "low_confidence"
+        assert entry["confidence"] == 0.31
+
+    def test_default_threshold_matches_d51_boundary(self):
+        # D5.1: "Low-confidence OCR on mandatory label field | <=0.49"
+        just_below = evaluate_condition(
+            {"op": "equals", "field": "extracted", "value": "x"},
+            {"extracted": {"value": "x", "confidence": 0.49}},
+        )
+        assert just_below.outcome == "UNKNOWN"
+
+        at_default = evaluate_condition(
+            {"op": "equals", "field": "extracted", "value": "x"},
+            {"extracted": {"value": "x", "confidence": DEFAULT_MIN_CONFIDENCE}},
+        )
+        assert at_default.outcome == "MATCH"
+
+    def test_leaf_level_min_confidence_overrides_default(self):
+        result = evaluate_condition(
+            {"op": "equals", "field": "extracted", "value": "x", "min_confidence": 0.9},
+            {"extracted": {"value": "x", "confidence": 0.8}},
+        )
+        assert result.outcome == "UNKNOWN"
+        assert result.unknown_reason == "low_confidence"
+
+    def test_exists_ignores_confidence_entirely(self):
+        result = evaluate_condition(
+            {"op": "exists", "field": "extracted"},
+            {"extracted": {"value": None, "confidence": 0.0}},
+        )
+        assert result.outcome == "MATCH"
+        assert result.unknown_reason is None
+
+    def test_not_exists_ignores_confidence_entirely(self):
+        result = evaluate_condition(
+            {"op": "not_exists", "field": "extracted"},
+            {},
+        )
+        assert result.outcome == "MATCH"
+
+    def test_missing_confidence_key_fails_safe_to_zero(self):
+        result = evaluate_condition(
+            {"op": "equals", "field": "extracted", "value": "x"},
+            {"extracted": {"value": "x"}},  # malformed - no "confidence" key
+        )
+        # No "confidence" key means this isn't detected as a wrapper at
+        # all (both keys are required) - it's treated as a plain dict
+        # value, compared as-is. Documented here so the boundary is
+        # explicit, not just implied.
+        assert result.outcome == "NO_MATCH"
+
+    def test_normalize_applies_after_confidence_unwrap(self):
+        result = evaluate_condition(
+            {
+                "op": "equals",
+                "field": "extracted",
+                "value": "clinically proven",
+                "normalize": "lowercase",
+            },
+            {"extracted": {"value": "CLINICALLY PROVEN", "confidence": 0.95}},
+        )
+        assert result.outcome == "MATCH"
+
+    def test_combinator_merges_low_confidence_over_missing(self):
+        condition = {
+            "op": "all",
+            "conditions": [
+                {"op": "equals", "field": "missing_field", "value": 1},
+                {"op": "equals", "field": "extracted", "value": "x"},
+            ],
+        }
+        result = evaluate_condition(
+            condition,
+            {"extracted": {"value": "x", "confidence": 0.1}},
+        )
+        assert result.outcome == "UNKNOWN"
+        assert result.unknown_reason == "low_confidence"
+
+    def test_combinator_reason_is_missing_when_no_low_confidence_present(self):
+        condition = {
+            "op": "all",
+            "conditions": [
+                {"op": "equals", "field": "missing_a", "value": 1},
+                {"op": "equals", "field": "missing_b", "value": 2},
+            ],
+        }
+        result = evaluate_condition(condition, {})
+        assert result.outcome == "UNKNOWN"
+        assert result.unknown_reason == "missing"
