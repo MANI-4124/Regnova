@@ -16,6 +16,7 @@ class RequirementVersionCreate(BaseModel):
     subcategory: str | None = None
     pathway: str | None = None
     dimension: str
+    subject_kind: str | None = None
     context: dict[str, Any] | None = None
     context_schema_name: str | None = None
     context_schema_version: int | None = None
@@ -59,6 +60,7 @@ class RequirementVersionUpdate(BaseModel):
     subcategory: str | None = None
     pathway: str | None = None
     dimension: str | None = None
+    subject_kind: str | None = None
     context: dict[str, Any] | None = None
     context_schema_name: str | None = None
     context_schema_version: int | None = None
@@ -119,6 +121,7 @@ class RequirementVersionResponse(BaseModel):
     subcategory: str | None
     pathway: str | None
     dimension: str
+    subject_kind: str | None
     context: dict[str, Any] | None
     context_schema_name: str | None
     context_schema_version: int | None

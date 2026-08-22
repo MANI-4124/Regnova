@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -16,6 +16,7 @@ from app.modules.product_market_state.exceptions import ProductMarketStateNotFou
 from app.modules.product_market_state.repository import ProductMarketStateRepository
 from app.modules.regulatory_basis_release.repository import RegulatoryBasisReleaseRepository
 from app.modules.requirement_result.repository import RequirementResultRepository
+from app.modules.requirement_version.models import RequirementVersionSubjectKind
 from app.modules.requirement_version.repository import RequirementVersionRepository
 from app.modules.rule_version.models import RuleOutputType
 from app.modules.rule_version.repository import RuleVersionRepository
@@ -37,7 +38,7 @@ from .models import (
 from .repository import AssessmentRunRepository, DimensionAssessmentRepository, StepRunRepository
 from .schemas import AssessmentRunCreate
 
-SUPPORTED_DIMENSIONS = frozenset({"CLAIMS", "LABEL"})
+SUPPORTED_DIMENSIONS = frozenset({"CLAIMS", "LABEL", "DOCUMENTS"})
 
 
 class AssessmentRunService:
@@ -154,11 +155,37 @@ class AssessmentRunService:
             release.rule_version_ids if release else [],
         )
 
+        if dimension == "DOCUMENTS":
+            self._run_documents_dimension(run, dimension_facts, rule_versions)
+        else:
+            self._run_subject_list_dimension(run, dimension, dimension_facts, rule_versions)
+
+        state = self._derive_dimension_state(run.id, dimension)
+        assessment = DimensionAssessment(
+            assessment_run_id=run.id,
+            dimension=dimension,
+            state=state,
+        )
+        self.dimension_assessments.create(assessment)
+        self.db.commit()
+
+    def _run_subject_list_dimension(
+        self,
+        run: AssessmentRun,
+        dimension: str,
+        dimension_facts: dict[str, Any],
+        rule_versions: list,
+    ) -> None:
+        """
+        Claims/Label shape: the caller enumerates the complete subject
+        list, and every active rule for the dimension runs against every
+        subject. Subject-collection key stays dimension-specific
+        ("claims" vs "label_fields") rather than a unified "items" key -
+        confirmed explicitly rather than touching the already-shipped
+        Claims contract.
+        """
+
         product_facts = dimension_facts.get("product", {})
-        # Subject-collection key stays dimension-specific ("claims" vs
-        # "label_fields") rather than a unified "items" key - confirmed
-        # explicitly rather than touching the already-shipped Claims
-        # contract.
         if dimension == "LABEL":
             subjects = [
                 self._build_label_field_facts(item)
@@ -176,14 +203,180 @@ class AssessmentRunService:
             for rule_version in rule_versions:
                 self._run_step(run, dimension, rule_version, subject_key, subject_facts)
 
-        state = self._derive_dimension_state(run.id, dimension)
-        assessment = DimensionAssessment(
-            assessment_run_id=run.id,
-            dimension=dimension,
-            state=state,
-        )
-        self.dimension_assessments.create(assessment)
-        self.db.commit()
+    def _run_documents_dimension(
+        self,
+        run: AssessmentRun,
+        dimension_facts: dict[str, Any],
+        rule_versions: list,
+    ) -> None:
+        """
+        Documents' checklist is regulatory-basis-driven, not
+        caller-driven (FR-08: "Checklist is generated from applicable
+        Requirement Versions... users cannot remove a mandatory item";
+        AC-FR-08-01) - unlike Claims/Label, where the caller enumerates
+        the full subject list. A required document_type the caller never
+        submitted is still evaluated (as empty facts), so a missing
+        mandatory document is actually detected rather than silently
+        skipped.
+
+        Active rules are split by their linked RequirementVersion's
+        subject_kind (see RequirementVersionSubjectKind) into two
+        independently-evaluated subject pools - a per-document rule
+        (e.g. checking expiry_date) has no meaningful facts to compare
+        against a consistency-check subject and vice versa, so running
+        the wrong pool against the wrong subject would silently produce
+        bogus UNKNOWN/FAIL_CLOSED results for rules never meant to apply
+        there.
+        """
+
+        product_facts = dimension_facts.get("product", {})
+        submitted_documents = {
+            item.get("document_type"): item
+            for item in dimension_facts.get("documents", [])
+        }
+
+        document_rules = [
+            rule_version
+            for rule_version in rule_versions
+            if rule_version.requirement_version.subject_kind
+            != RequirementVersionSubjectKind.CONSISTENCY_CHECK.value
+        ]
+        consistency_rules = [
+            rule_version
+            for rule_version in rule_versions
+            if rule_version.requirement_version.subject_kind
+            == RequirementVersionSubjectKind.CONSISTENCY_CHECK.value
+        ]
+
+        document_types: list[str] = []
+        seen: set[str] = set()
+        for rule_version in document_rules:
+            document_type = rule_version.requirement_version.obligation_type
+            if document_type not in seen:
+                seen.add(document_type)
+                document_types.append(document_type)
+
+        for document_type in document_types:
+            submitted = submitted_documents.get(document_type)
+            subject_facts = {
+                "product": product_facts,
+                **self._build_document_facts(document_type, submitted, run.started_at),
+            }
+
+            for rule_version in document_rules:
+                if rule_version.requirement_version.obligation_type != document_type:
+                    continue
+                self._run_step(run, "DOCUMENTS", rule_version, document_type, subject_facts)
+
+        for check in dimension_facts.get("consistency_checks", []):
+            check_key = check.get("check_key")
+            subject_facts = {
+                "product": product_facts,
+                **self._build_consistency_check_facts(check),
+            }
+
+            for rule_version in consistency_rules:
+                self._run_step(run, "DOCUMENTS", rule_version, check_key, subject_facts)
+
+    def _build_document_facts(
+        self,
+        document_type: str,
+        item: dict[str, Any] | None,
+        run_started_at: datetime | None,
+    ) -> dict[str, Any]:
+        """
+        item is None when the caller never submitted anything for this
+        checklist document_type at all - facts then carry only
+        document_type, so a not_exists check on "status" (always present
+        whenever anything was genuinely uploaded) correctly detects
+        "missing entirely". This is the same null-value-omission
+        convention Label's _build_label_field_facts established: a field
+        whose value is None is omitted from facts rather than built as a
+        null-valued wrapper, which would make it structurally "exist".
+
+        Each extracted business field (manufacturer, expiry_date, ...)
+        arrives already {"value", "confidence"}-wrapped from the caller,
+        unlike Label's single flat value/confidence pair - a document has
+        several independently-extracted fields at once, so each gets its
+        own wrapper directly rather than one shared indirection key.
+
+        expiry_date additionally yields a derived days_until_expiry fact,
+        computed here (not in the engine, which must stay a pure function
+        of condition+facts to keep StepRun replay deterministic - see
+        CLAUDE.md) from the run's own started_at, not wall-clock now().
+        It inherits expiry_date's own confidence: the day-count arithmetic
+        itself adds no uncertainty beyond what the OCR read already carries.
+        """
+
+        if item is None:
+            return {"document_type": document_type}
+
+        facts: dict[str, Any] = {"document_type": document_type}
+
+        if item.get("status") is not None:
+            facts["status"] = item["status"]
+
+        for field_key, field_value in item.items():
+            if field_key in ("document_type", "status"):
+                continue
+            if not isinstance(field_value, dict) or field_value.get("value") is None:
+                continue
+            facts[field_key] = {
+                "value": field_value.get("value"),
+                "confidence": field_value.get("confidence"),
+            }
+
+        if "expiry_date" in facts and run_started_at is not None:
+            days = self._compute_days_until_expiry(facts["expiry_date"]["value"], run_started_at)
+            if days is not None:
+                facts["days_until_expiry"] = {
+                    "value": days,
+                    "confidence": facts["expiry_date"]["confidence"],
+                }
+
+        return facts
+
+    def _compute_days_until_expiry(
+        self,
+        expiry_date_value: Any,
+        run_started_at: datetime,
+    ) -> int | None:
+        try:
+            expiry = date.fromisoformat(expiry_date_value)
+        except (TypeError, ValueError):
+            return None
+
+        return (expiry - run_started_at.date()).days
+
+    def _build_consistency_check_facts(self, check: dict[str, Any]) -> dict[str, Any]:
+        """
+        The comparison itself (does "Acme Corp" mean the same manufacturer
+        as "Acme Corporation") is out of scope here - per C8's own
+        "Consistency Check" entity ("Pair/set of normalized fields |
+        Compared values, match policy, outcome, confidence and resulting
+        finding"), that computation belongs to a real Consistency Check
+        mechanism, unbuilt. The caller supplies the already-computed
+        outcome as a fact, confidence-wrapped like any other
+        extraction-derived value, same null-value-omission convention as
+        documents/label fields.
+        """
+
+        facts: dict[str, Any] = {
+            "check_key": check.get("check_key"),
+            "compared_field": check.get("compared_field"),
+            "value_a": check.get("value_a"),
+            "value_b": check.get("value_b"),
+            "document_types": check.get("document_types"),
+        }
+
+        outcome = check.get("outcome")
+        if isinstance(outcome, dict) and outcome.get("value") is not None:
+            facts["outcome"] = {
+                "value": outcome.get("value"),
+                "confidence": outcome.get("confidence"),
+            }
+
+        return facts
 
     def _build_label_field_facts(self, item: dict[str, Any]) -> dict[str, Any]:
         """

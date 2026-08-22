@@ -11,10 +11,16 @@ class AssessmentRunCreate(BaseModel):
 
     product_market_state_id: UUID
 
-    # Kept generic (dimension-keyed) even though only "CLAIMS" has any
-    # implementation behind it right now - see CLAUDE.md "Assessment
-    # engine". input_facts["CLAIMS"] is expected to look like
-    # {"product": {...shared facts...}, "claims": [{"claim_id": ..., ...}]}.
+    # Kept generic (dimension-keyed) - see CLAUDE.md "Assessment engine".
+    # input_facts["CLAIMS"] looks like {"product": {...}, "claims": [...]}.
+    # input_facts["LABEL"] looks like {"product": {...}, "label_fields": [...]}.
+    # input_facts["DOCUMENTS"] looks like {"product": {...},
+    # "documents": [{"document_type": ..., "status": ..., <field>: {"value",
+    # "confidence"}, ...}], "consistency_checks": [{"check_key": ...,
+    # "outcome": {"value", "confidence"}, ...}]} - the documents[] checklist
+    # itself is derived from the regulatory basis, not this list; entries
+    # here are matched against it by document_type, and anything without a
+    # matching checklist rule is ignored.
     dimensions: list[str]
     input_facts: dict[str, Any] = {}
 

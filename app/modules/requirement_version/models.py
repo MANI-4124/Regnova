@@ -46,6 +46,23 @@ class RequirementDimension(str, Enum):
     REGISTRATION_READINESS = "REGISTRATION_READINESS"
 
 
+class RequirementVersionSubjectKind(str, Enum):
+    """
+    Which per-run subject pool this RequirementVersion's rules evaluate
+    against, for dimensions with more than one subject shape (currently
+    only DOCUMENTS: caller-submitted documents vs. caller-submitted
+    consistency_checks - see
+    AssessmentRunService._run_documents_dimension). Null means DOCUMENT.
+    An explicit column rather than inferring routing from an
+    obligation_type string prefix - same precedent as
+    StepRun.unknown_reason: routing correctness shouldn't depend on a
+    rule author remembering a naming convention.
+    """
+
+    DOCUMENT = "DOCUMENT"
+    CONSISTENCY_CHECK = "CONSISTENCY_CHECK"
+
+
 class RequirementSeverity(str, Enum):
     CRITICAL = "CRITICAL"
     MAJOR = "MAJOR"
@@ -142,6 +159,13 @@ class RequirementVersion(
     dimension: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
+    )
+
+    # Null = DOCUMENT (see RequirementVersionSubjectKind). Only meaningful
+    # for dimension == DOCUMENTS today.
+    subject_kind: Mapped[str | None] = mapped_column(
+        String(30),
+        nullable=True,
     )
 
     context: Mapped[dict[str, Any] | None] = mapped_column(
