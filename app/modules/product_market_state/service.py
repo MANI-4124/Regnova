@@ -15,6 +15,7 @@ from app.modules.regulatory_basis_release.exceptions import (
 from app.modules.regulatory_basis_release.repository import (
     RegulatoryBasisReleaseRepository,
 )
+from app.modules.state_snapshot.repository import StateSnapshotRepository
 
 from .exceptions import (
     ProductMarketStateAlreadyActive,
@@ -40,6 +41,7 @@ class ProductMarketStateService:
         self.products = ProductRepository(db)
         self.product_versions = ProductVersionRepository(db)
         self.releases = RegulatoryBasisReleaseRepository(db)
+        self.state_snapshots = StateSnapshotRepository(db)
 
     def _get_product_or_404(self, organization_id: UUID, product_id: UUID):
         product = self.products.get_by_id(organization_id, product_id)
@@ -179,10 +181,32 @@ class ProductMarketStateService:
             if self.releases.get_by_id(payload.regulatory_basis_release_id) is None:
                 raise RegulatoryBasisReleaseNotFound()
 
+        # Minimal half of staleness (see CLAUDE.md "Market readiness" -
+        # resolution: both halves in scope, cascading impact analysis
+        # stays out): a direct, synchronous flag the moment the pin
+        # actually changes, in the SAME transaction as the update -
+        # not a background job, and not walking dependency edges to
+        # figure out exactly which Requirement Results/Findings are
+        # affected (C11, unbuilt).
+        pin_changed = (
+            payload.product_version_id is not None
+            and payload.product_version_id != state.product_version_id
+        ) or (
+            payload.regulatory_basis_release_id is not None
+            and payload.regulatory_basis_release_id != state.regulatory_basis_release_id
+        )
+
         data = payload.model_dump(exclude_unset=True)
 
         for field, value in data.items():
             setattr(state, field, value)
+
+        if pin_changed:
+            current_snapshot = self.state_snapshots.get_current(state.id)
+            if current_snapshot is not None:
+                current_snapshot.is_current = False
+                current_snapshot.stale_reason = "PRODUCT_MARKET_STATE_PIN_CHANGED"
+                self.state_snapshots.update(current_snapshot)
 
         try:
             self.repository.update(state)

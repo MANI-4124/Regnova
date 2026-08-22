@@ -24,6 +24,8 @@ from app.modules.regulatory_basis_release.router import router as regulatory_bas
 from app.modules.product_market_state.router import router as product_market_state_router
 from app.modules.assessment_run.router import router as assessment_run_router
 from app.modules.finding.router import router as finding_router
+from app.modules.state_snapshot.router import router as state_snapshot_router
+from app.modules.market_readiness.router import router as market_readiness_router
 
 
 @asynccontextmanager
@@ -73,6 +75,8 @@ def create_app() -> FastAPI:
     app.include_router(product_market_state_router)
     app.include_router(assessment_run_router)
     app.include_router(finding_router)
+    app.include_router(state_snapshot_router)
+    app.include_router(market_readiness_router)
     register_exception_handlers(app)
 
     @app.get("/")

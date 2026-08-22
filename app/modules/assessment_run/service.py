@@ -143,6 +143,29 @@ class AssessmentRunService:
 
         return run
 
+    def run_dimension(
+        self,
+        run: AssessmentRun,
+        dimension: str,
+        dimension_facts: dict[str, Any],
+    ) -> None:
+        """
+        Public entrypoint for orchestrators (MarketReadinessService) that
+        already own an AssessmentRun and need to execute a single
+        dimension against it directly - bypasses SUPPORTED_DIMENSIONS
+        validation, which is `create_and_run`'s guardrail for direct
+        single-dimension callers via POST /assessment-runs. Market
+        Readiness deliberately attempts all eight canonical dimensions
+        every time; the five with no rule content yet naturally settle
+        at DimensionAssessmentState.UNKNOWN (no rules -> no StepRuns ->
+        `_derive_dimension_state`'s own `if not steps: return UNKNOWN`),
+        which is exactly the signal G0's "required dimension Unknown"
+        gate condition needs - not a reason to special-case anything
+        here.
+        """
+
+        self._run_dimension(run, dimension, dimension_facts)
+
     def _run_dimension(
         self,
         run: AssessmentRun,
