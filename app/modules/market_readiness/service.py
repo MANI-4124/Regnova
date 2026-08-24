@@ -209,14 +209,38 @@ class MarketReadinessService:
         return self._build_snapshot(state, run, dimension_summary_raw)
 
     def _resolve_dimension(self, run, state, dimension_value, input_facts, forced_rerun_dimensions):
+        """
+        Two distinct reuse checks, not one - see CLAUDE.md "Market
+        readiness" for the full reasoning:
+
+        - Key absent (dimension_value not in forced_rerun_dimensions):
+          the caller submitted nothing this run for this dimension.
+          Pins alone decide reuse, exactly as before this hash existed -
+          there is nothing submitted to compare against.
+        - Key present: the caller resupplied this dimension's facts.
+          That used to force an unconditional rerun regardless of
+          content; now identical resupply (matching pins AND a matching
+          submitted_facts_hash) still reuses safely, and only genuinely
+          different content falls through to a real rerun.
+        """
+
+        dimension_facts = input_facts.get(dimension_value, {})
+
         if dimension_value not in forced_rerun_dimensions:
             reusable = self.dimension_assessments.get_latest_reusable(
                 state.id, dimension_value, state.product_version_id, state.regulatory_basis_release_id,
             )
-            if reusable is not None:
-                return reusable, True
+        else:
+            facts_hash = self.assessment_runs.hash_facts(dimension_facts)
+            reusable = self.dimension_assessments.get_latest_reusable(
+                state.id, dimension_value, state.product_version_id, state.regulatory_basis_release_id,
+                submitted_facts_hash=facts_hash,
+            )
 
-        self.assessment_runs.run_dimension(run, dimension_value, input_facts.get(dimension_value, {}))
+        if reusable is not None:
+            return reusable, True
+
+        self.assessment_runs.run_dimension(run, dimension_value, dimension_facts)
         assessment = self.dimension_assessments.get_latest_for_run_dimension(run.id, dimension_value)
         return assessment, False
 

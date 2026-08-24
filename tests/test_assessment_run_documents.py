@@ -551,3 +551,57 @@ def test_build_document_facts_days_until_expiry_negative_when_already_expired(db
         started_at,
     )
     assert facts["days_until_expiry"]["value"] == -31
+
+
+def test_hash_facts_is_stable_regardless_of_dict_key_order(db):
+    """
+    The one property DimensionAssessment.submitted_facts_hash's reuse
+    comparison depends on: two dicts with the same content in a
+    different key order must hash identically, at every nesting level.
+    """
+    service = AssessmentRunService(db)
+
+    a = {"product": {"category_id": "cosmetic"}, "claims": [{"claim_id": "c1", "wording": "x"}]}
+    b = {"claims": [{"wording": "x", "claim_id": "c1"}], "product": {"category_id": "cosmetic"}}
+
+    assert service.hash_facts(a) == service.hash_facts(b)
+
+
+def test_hash_facts_differs_for_different_content(db):
+    service = AssessmentRunService(db)
+
+    a = {"claims": [{"claim_id": "c1", "wording": "clinically proven"}]}
+    b = {"claims": [{"claim_id": "c1", "wording": "a different claim"}]}
+
+    assert service.hash_facts(a) != service.hash_facts(b)
+
+
+def test_hash_facts_is_sensitive_to_list_order(db):
+    """
+    Deliberately order-sensitive, not canonicalized - a reordered list
+    hashes differently, which only ever costs an unnecessary rerun
+    (the safe direction), never a wrongly-skipped one. See CLAUDE.md
+    "Market readiness" for the tradeoff.
+    """
+    service = AssessmentRunService(db)
+
+    a = {"claims": [{"claim_id": "c1", "wording": "x"}, {"claim_id": "c2", "wording": "y"}]}
+    b = {"claims": [{"claim_id": "c2", "wording": "y"}, {"claim_id": "c1", "wording": "x"}]}
+
+    assert service.hash_facts(a) != service.hash_facts(b)
+
+
+def test_hash_facts_is_sensitive_to_confidence(db):
+    """
+    Confidence is included in the hash, not stripped before hashing -
+    a confidence-only revision (same wording/value, different
+    confidence) must be treated as different submitted facts, since
+    AC-FR-06-02 already treats confidence as load-bearing content, not
+    descriptive metadata.
+    """
+    service = AssessmentRunService(db)
+
+    a = {"label_fields": [{"field_key": "net_quantity", "value": "50 mL", "confidence": 0.95}]}
+    b = {"label_fields": [{"field_key": "net_quantity", "value": "50 mL", "confidence": 0.31}]}
+
+    assert service.hash_facts(a) != service.hash_facts(b)

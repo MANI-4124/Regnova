@@ -65,6 +65,23 @@ class AssessmentRunService:
         self.finding_revisions = FindingRevisionRepository(db)
         self.findings = FindingService(db)
 
+    def hash_facts(self, facts: dict[str, Any]) -> str:
+        """
+        SHA-256 over facts, sort_keys=True so nested dict key order
+        never affects the result - the one hashing convention this
+        service uses everywhere it needs a stable content fingerprint
+        (StepRun.input_hash and DimensionAssessment.submitted_facts_hash
+        both call this). Deliberately NOT list-order-insensitive and
+        NOT float-rounded: a reordered list or a different float
+        representation hashes differently, which only ever causes an
+        unnecessary rerun, never a wrongly-skipped one - see CLAUDE.md
+        "Market readiness" for why that's the accepted tradeoff.
+        """
+
+        return hashlib.sha256(
+            json.dumps(facts, sort_keys=True, default=str).encode("utf-8"),
+        ).hexdigest()
+
     def _get_state_or_404(self, organization_id: UUID, product_market_state_id: UUID):
         state = self.product_market_states.get_by_id_only(
             organization_id,
@@ -188,6 +205,7 @@ class AssessmentRunService:
             assessment_run_id=run.id,
             dimension=dimension,
             state=state,
+            submitted_facts_hash=self.hash_facts(dimension_facts),
         )
         self.dimension_assessments.create(assessment)
         self.db.commit()
@@ -441,9 +459,7 @@ class AssessmentRunService:
         subject_key: str | None,
         facts: dict[str, Any],
     ) -> None:
-        input_hash = hashlib.sha256(
-            json.dumps(facts, sort_keys=True, default=str).encode("utf-8"),
-        ).hexdigest()
+        input_hash = self.hash_facts(facts)
 
         step = StepRun(
             assessment_run_id=run.id,

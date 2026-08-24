@@ -282,6 +282,26 @@ class DimensionAssessment(
         nullable=False,
     )
 
+    # SHA-256 over the raw dimension_facts dict a caller submitted this
+    # run for this dimension - same hashlib/json.dumps(sort_keys=True)
+    # convention as StepRun.input_hash, but a deliberately different
+    # quantity: this hashes the caller's whole raw submission, not one
+    # rule's resolved per-subject view of it, and stays defined even for
+    # dimensions with zero active rules (which produce zero StepRuns).
+    # Lets MarketReadinessService's reuse check compare submitted
+    # content, not just (product_version_id, regulatory_basis_release_id)
+    # pins, when a caller resupplies a dimension's facts. Nullable:
+    # rows created before this column existed have no hash and are
+    # never backfilled - see CLAUDE.md "Market readiness" for why a
+    # backfill is actually impossible (the raw submission was never
+    # persisted for historical runs), and why NULL degrading to "never
+    # matches, always reruns on resupply" is the correct, not just
+    # convenient, default.
+    submitted_facts_hash: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+
     assessment_run = relationship(
         "AssessmentRun",
         back_populates="dimension_assessments",

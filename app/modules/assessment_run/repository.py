@@ -114,6 +114,7 @@ class DimensionAssessmentRepository(BaseRepository[DimensionAssessment]):
         dimension: str,
         product_version_id: UUID | None,
         regulatory_basis_release_id: UUID | None,
+        submitted_facts_hash: str | None = None,
     ) -> DimensionAssessment | None:
         """
         Reuse-safety for Market Readiness (FR-05 "reusing valid current
@@ -121,10 +122,24 @@ class DimensionAssessmentRepository(BaseRepository[DimensionAssessment]):
         for this (product_market_state, dimension), whose originating
         AssessmentRun pinned the exact same product_version_id and
         regulatory_basis_release_id being pinned now, and which didn't
-        FAIL. Not input-fact hashing - AC-FR-05-01 names product version
-        and regulatory basis release as what reproducibility pins on,
-        and reuse's whole point is skipping re-submission of facts, so
-        there'd be nothing to hash against anyway.
+        FAIL.
+
+        submitted_facts_hash is optional and additive, not a replacement
+        for the pin comparison above. Omitted (None), this behaves
+        exactly as it always has - MarketReadinessService's key-absent
+        path, where the caller supplied nothing this run to compare
+        against, so pins alone are genuinely all there is to reuse on.
+        Provided, it's ANDed onto the same query - MarketReadinessService's
+        key-present path, where the caller resupplied a dimension's
+        facts: only a candidate whose stored hash matches what was just
+        resupplied is reusable, so identical resupply still reuses
+        safely while different resupply correctly falls through to a
+        real rerun. A NULL-hash row (created before this column existed)
+        can never equal a real hash in SQL, so it's automatically
+        excluded here with no special-casing - it simply always causes
+        a fall-through to rerun, same as before this column existed.
+        See CLAUDE.md "Market readiness" for the residual gap this does
+        NOT close (the key-absent path still trusts pins alone).
         """
 
         statement = (
@@ -137,8 +152,13 @@ class DimensionAssessmentRepository(BaseRepository[DimensionAssessment]):
                 AssessmentRun.regulatory_basis_release_id == regulatory_basis_release_id,
                 DimensionAssessment.dimension == dimension,
             )
-            .order_by(DimensionAssessment.created_at.desc())
-            .limit(1)
         )
+
+        if submitted_facts_hash is not None:
+            statement = statement.where(
+                DimensionAssessment.submitted_facts_hash == submitted_facts_hash,
+            )
+
+        statement = statement.order_by(DimensionAssessment.created_at.desc()).limit(1)
 
         return self.db.scalar(statement)

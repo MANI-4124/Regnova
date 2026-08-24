@@ -280,14 +280,17 @@ def test_second_run_reuses_unchanged_dimension(client, tenant_a, regulatory_cont
     )
 
 
-def test_supplying_facts_forces_rerun_even_if_otherwise_reusable(client, tenant_a, regulatory_content_writer):
+def test_supplying_different_facts_forces_rerun_even_if_otherwise_reusable(client, tenant_a, regulatory_content_writer):
     """
     Self-sufficient by construction: run 1 -> 2 (no facts) proves reuse
     is genuinely happening under identical conditions (a control,
     ruling out "reuse is just always broken" as an alternative
     explanation for run 3 also showing reused=False); only run 2 -> 3
-    (facts resupplied) isolates the one variable this test is actually
-    about.
+    (different facts resupplied) isolates the one variable this test is
+    actually about. Resupplying facts no longer *unconditionally* forces
+    a rerun (see test_resupplying_identical_facts_still_reuses) - what's
+    guaranteed is that genuinely different content always does, which is
+    what this test resupplies (a different `wording`, not the same one).
     """
 
     _, _, state = _setup_ready_state(client, tenant_a, regulatory_content_writer)
@@ -296,11 +299,36 @@ def test_supplying_facts_forces_rerun_even_if_otherwise_reusable(client, tenant_
     second = _run_market_readiness(client, tenant_a, state["id"], {}).json()
     assert second["dimension_summary"]["CLAIMS"]["reused"] is True
 
-    third = _run_market_readiness(client, tenant_a, state["id"], _claims_facts()).json()
+    third = _run_market_readiness(
+        client, tenant_a, state["id"], _claims_facts(wording="a materially different claim"),
+    ).json()
     assert third["dimension_summary"]["CLAIMS"]["reused"] is False
     assert (
         third["dimension_summary"]["CLAIMS"]["dimension_assessment_id"]
         != second["dimension_summary"]["CLAIMS"]["dimension_assessment_id"]
+    )
+
+
+def test_resupplying_identical_facts_still_reuses(client, tenant_a, regulatory_content_writer):
+    """
+    The other half of the same behavior: resupplying a dimension's key
+    used to force an unconditional rerun regardless of content. Now
+    that DimensionAssessment.submitted_facts_hash lets the reuse check
+    compare content instead of just presence, byte-identical resupply
+    is safe to reuse - only genuinely different content (covered by
+    test_supplying_different_facts_forces_rerun_even_if_otherwise_reusable)
+    still forces a real rerun.
+    """
+
+    _, _, state = _setup_ready_state(client, tenant_a, regulatory_content_writer)
+
+    first = _run_market_readiness(client, tenant_a, state["id"], _claims_facts()).json()
+    second = _run_market_readiness(client, tenant_a, state["id"], _claims_facts()).json()
+
+    assert second["dimension_summary"]["CLAIMS"]["reused"] is True
+    assert (
+        second["dimension_summary"]["CLAIMS"]["dimension_assessment_id"]
+        == first["dimension_summary"]["CLAIMS"]["dimension_assessment_id"]
     )
 
 
