@@ -58,4 +58,6 @@ class UserResponse(BaseModel):
 
     is_verified: bool
 
+    is_permanent_admin: bool
+
     last_login: datetime | None

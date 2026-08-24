@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_db_session
 from app.modules.rbac.dependencies import (
-    require_admin,
     require_employee,
+    require_regulatory_content_writer,
 )
 from app.modules.user.models import User
 
@@ -58,10 +58,7 @@ def get_rule(
 )
 def create_rule(
     payload: RuleCreate,
-    # NOTE: require_admin here is an interim placeholder, not a real
-    # authorization decision - same unresolved actor-model gap as
-    # Source/Requirement. See CLAUDE.md "Regulatory content ownership".
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_regulatory_content_writer),
     service: RuleService = Depends(get_rule_service),
 ):
     return service.create(payload)
@@ -74,7 +71,7 @@ def create_rule(
 def update_rule(
     rule_id: UUID,
     payload: RuleUpdate,
-    current_user: User = Depends(require_admin),  # interim placeholder - see CLAUDE.md
+    current_user: User = Depends(require_regulatory_content_writer),
     service: RuleService = Depends(get_rule_service),
 ):
     return service.update(rule_id, payload)

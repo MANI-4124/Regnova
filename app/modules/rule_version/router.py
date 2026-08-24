@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_db_session
 from app.modules.rbac.dependencies import (
-    require_admin,
     require_employee,
+    require_regulatory_content_writer,
 )
 from app.modules.user.models import User
 
@@ -61,7 +61,7 @@ def get_rule_version(
 def create_rule_version(
     rule_id: UUID,
     payload: RuleVersionCreate,
-    current_user: User = Depends(require_admin),  # interim placeholder - see CLAUDE.md
+    current_user: User = Depends(require_regulatory_content_writer),
     service: RuleVersionService = Depends(get_rule_version_service),
 ):
     return service.create(rule_id, payload)
@@ -75,7 +75,7 @@ def update_rule_version(
     rule_id: UUID,
     version_id: UUID,
     payload: RuleVersionUpdate,
-    current_user: User = Depends(require_admin),  # interim placeholder - see CLAUDE.md
+    current_user: User = Depends(require_regulatory_content_writer),
     service: RuleVersionService = Depends(get_rule_version_service),
 ):
     return service.update(rule_id, version_id, payload)

@@ -79,8 +79,8 @@ def _create_state(client, tenant, product_id, product_version_id, market="Malays
     )
 
 
-def _create_active_release(client, tenant, jurisdiction="Malaysia", market="Malaysia"):
-    source = client.post("/sources", headers=tenant["headers"]).json()
+def _create_active_release(client, writer, jurisdiction="Malaysia", market="Malaysia"):
+    source = client.post("/sources", headers=writer["headers"]).json()
     source_version = client.post(
         f"/sources/{source['id']}/versions",
         json={
@@ -90,12 +90,12 @@ def _create_active_release(client, tenant, jurisdiction="Malaysia", market="Mala
             "tier": 1,
             "source_type": "OFFICIAL_GUIDELINE",
         },
-        headers=tenant["headers"],
+        headers=writer["headers"],
     ).json()
     activated = client.put(
         f"/sources/{source['id']}/versions/{source_version['id']}",
         json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
-        headers=tenant["headers"],
+        headers=writer["headers"],
     ).json()
 
     release = client.post(
@@ -105,7 +105,7 @@ def _create_active_release(client, tenant, jurisdiction="Malaysia", market="Mala
             "market": market,
             "source_version_ids": [activated["id"]],
         },
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert release.status_code == 200
     return release.json()
@@ -134,8 +134,8 @@ def test_create_and_get_state(client, tenant_a):
     assert get_resp.json()["id"] == state["id"]
 
 
-def test_create_resolves_active_release_for_market(client, tenant_a):
-    release = _create_active_release(client, tenant_a)
+def test_create_resolves_active_release_for_market(client, tenant_a, regulatory_content_writer):
+    release = _create_active_release(client, regulatory_content_writer)
 
     product = _create_product(client, tenant_a)
     version = _create_version(client, tenant_a, product["id"])

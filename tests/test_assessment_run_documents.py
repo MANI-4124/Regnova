@@ -33,8 +33,8 @@ def _create_state(client, tenant, product_id, product_version_id, market="Malays
     return response.json()
 
 
-def _create_requirement_version(client, tenant, **overrides):
-    requirement = client.post("/requirements", json={}, headers=tenant["headers"]).json()
+def _create_requirement_version(client, writer, **overrides):
+    requirement = client.post("/requirements", json={}, headers=writer["headers"]).json()
 
     payload = {
         "jurisdiction": "Malaysia",
@@ -53,24 +53,24 @@ def _create_requirement_version(client, tenant, **overrides):
     response = client.post(
         f"/requirements/{requirement['id']}/versions",
         json=payload,
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return requirement, response.json()
 
 
-def _activate_requirement_version(client, tenant, requirement, version):
+def _activate_requirement_version(client, writer, requirement, version):
     response = client.put(
         f"/requirements/{requirement['id']}/versions/{version['id']}",
         json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return response.json()
 
 
-def _create_rule_version(client, tenant, requirement_version_id, **overrides):
-    rule = client.post("/rules", json={}, headers=tenant["headers"]).json()
+def _create_rule_version(client, writer, requirement_version_id, **overrides):
+    rule = client.post("/rules", json={}, headers=writer["headers"]).json()
 
     payload = {
         "requirement_version_id": requirement_version_id,
@@ -83,24 +83,24 @@ def _create_rule_version(client, tenant, requirement_version_id, **overrides):
     response = client.post(
         f"/rules/{rule['id']}/versions",
         json=payload,
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return rule, response.json()
 
 
-def _activate_rule_version(client, tenant, rule, version):
+def _activate_rule_version(client, writer, rule, version):
     response = client.put(
         f"/rules/{rule['id']}/versions/{version['id']}",
         json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return response.json()
 
 
-def _create_active_release(client, tenant, rule_version_ids, requirement_version_ids):
-    source = client.post("/sources", headers=tenant["headers"]).json()
+def _create_active_release(client, writer, rule_version_ids, requirement_version_ids):
+    source = client.post("/sources", headers=writer["headers"]).json()
     source_version = client.post(
         f"/sources/{source['id']}/versions",
         json={
@@ -110,12 +110,12 @@ def _create_active_release(client, tenant, rule_version_ids, requirement_version
             "tier": 1,
             "source_type": "OFFICIAL_GUIDELINE",
         },
-        headers=tenant["headers"],
+        headers=writer["headers"],
     ).json()
     activated_source = client.put(
         f"/sources/{source['id']}/versions/{source_version['id']}",
         json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
-        headers=tenant["headers"],
+        headers=writer["headers"],
     ).json()
 
     response = client.post(
@@ -127,7 +127,7 @@ def _create_active_release(client, tenant, rule_version_ids, requirement_version
             "requirement_version_ids": requirement_version_ids,
             "rule_version_ids": rule_version_ids,
         },
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return response.json()
@@ -135,7 +135,7 @@ def _create_active_release(client, tenant, rule_version_ids, requirement_version
 
 def _build_document_rule_only(
     client,
-    tenant,
+    writer,
     *,
     condition,
     output_type="FINDING_PROPOSAL",
@@ -152,30 +152,30 @@ def _build_document_rule_only(
     """
 
     requirement, requirement_version = _create_requirement_version(
-        client, tenant,
+        client, writer,
         default_severity=default_severity,
         obligation_type=obligation_type,
         subject_kind=subject_kind,
         **requirement_overrides,
     )
-    requirement_version = _activate_requirement_version(client, tenant, requirement, requirement_version)
+    requirement_version = _activate_requirement_version(client, writer, requirement, requirement_version)
 
     rule, rule_version = _create_rule_version(
         client,
-        tenant,
+        writer,
         requirement_version["id"],
         condition=condition,
         output_type=output_type,
         unknown_behavior=unknown_behavior,
     )
-    rule_version = _activate_rule_version(client, tenant, rule, rule_version)
+    rule_version = _activate_rule_version(client, writer, rule, rule_version)
 
     return requirement_version, rule_version
 
 
 def _build_document_rule(
     client,
-    tenant,
+    writer,
     *,
     condition,
     output_type="FINDING_PROPOSAL",
@@ -186,7 +186,7 @@ def _build_document_rule(
     **requirement_overrides,
 ):
     requirement_version, rule_version = _build_document_rule_only(
-        client, tenant,
+        client, writer,
         condition=condition,
         output_type=output_type,
         unknown_behavior=unknown_behavior,
@@ -197,7 +197,7 @@ def _build_document_rule(
     )
 
     release = _create_active_release(
-        client, tenant,
+        client, writer,
         rule_version_ids=[rule_version["id"]],
         requirement_version_ids=[requirement_version["id"]],
     )
@@ -248,9 +248,9 @@ def _get_findings(client, tenant, state_id):
 # --- Tests -------------------------------------------------------------
 
 
-def test_missing_mandatory_document_proposes_finding(client, tenant_a):
+def test_missing_mandatory_document_proposes_finding(client, tenant_a, regulatory_content_writer):
     _build_document_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "not_exists", "field": "status"},
         output_type="FINDING_PROPOSAL",
     )
@@ -275,9 +275,9 @@ def test_missing_mandatory_document_proposes_finding(client, tenant_a):
     assert findings[0]["subject_key"] == "gmp_certificate"
 
 
-def test_uploaded_document_satisfies_checklist_no_finding(client, tenant_a):
+def test_uploaded_document_satisfies_checklist_no_finding(client, tenant_a, regulatory_content_writer):
     _build_document_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "not_exists", "field": "status"},
         output_type="FINDING_PROPOSAL",
     )
@@ -300,7 +300,7 @@ def test_uploaded_document_satisfies_checklist_no_finding(client, tenant_a):
     assert _get_findings(client, tenant_a, state["id"]) == []
 
 
-def test_low_confidence_document_field_hard_pins_human_review(client, tenant_a):
+def test_low_confidence_document_field_hard_pins_human_review(client, tenant_a, regulatory_content_writer):
     """
     Confirms the AC-FR-06-02 hard-pin generalizes to Documents (explicitly
     confirmed): FR-08 relies on extracted data the same way Label relies
@@ -310,7 +310,7 @@ def test_low_confidence_document_field_hard_pins_human_review(client, tenant_a):
     """
 
     _build_document_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "equals", "field": "manufacturer", "value": "Acme Corp"},
         output_type="REQUIREMENT_RESULT",
         unknown_behavior="FAIL_CLOSED",
@@ -336,9 +336,9 @@ def test_low_confidence_document_field_hard_pins_human_review(client, tenant_a):
     assert detail["dimension_assessments"][0]["state"] == "HUMAN_REVIEW_REQUIRED"
 
 
-def test_consistency_check_mismatch_proposes_finding(client, tenant_a):
+def test_consistency_check_mismatch_proposes_finding(client, tenant_a, regulatory_content_writer):
     _build_document_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "equals", "field": "outcome", "value": "MISMATCH"},
         output_type="FINDING_PROPOSAL",
         obligation_type="manufacturer_consistency",
@@ -367,7 +367,7 @@ def test_consistency_check_mismatch_proposes_finding(client, tenant_a):
     assert findings[0]["subject_key"] == "manufacturer_gmp_vs_cfs"
 
 
-def test_consistency_and_document_requirements_route_to_correct_subject_pools(client, tenant_a):
+def test_consistency_and_document_requirements_route_to_correct_subject_pools(client, tenant_a, regulatory_content_writer):
     """
     The routing guarantee subject_kind exists for: a CONSISTENCY_CHECK-
     kind requirement's rule must never run against a document checklist
@@ -378,14 +378,14 @@ def test_consistency_and_document_requirements_route_to_correct_subject_pools(cl
     """
 
     doc_requirement_version, doc_rule_version = _build_document_rule_only(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "not_exists", "field": "status"},
         output_type="FINDING_PROPOSAL",
         obligation_type="gmp_certificate",
         subject_kind=None,
     )
     consistency_requirement_version, consistency_rule_version = _build_document_rule_only(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "equals", "field": "outcome", "value": "MISMATCH"},
         output_type="FINDING_PROPOSAL",
         obligation_type="manufacturer_consistency",
@@ -394,7 +394,7 @@ def test_consistency_and_document_requirements_route_to_correct_subject_pools(cl
 
     # Only one ACTIVE release is allowed per jurisdiction/market - combine
     # both rules into a single release so both are active for the same run.
-    source = client.post("/sources", headers=tenant_a["headers"]).json()
+    source = client.post("/sources", headers=regulatory_content_writer["headers"]).json()
     source_version = client.post(
         f"/sources/{source['id']}/versions",
         json={
@@ -404,12 +404,12 @@ def test_consistency_and_document_requirements_route_to_correct_subject_pools(cl
             "tier": 1,
             "source_type": "OFFICIAL_GUIDELINE",
         },
-        headers=tenant_a["headers"],
+        headers=regulatory_content_writer["headers"],
     ).json()
     activated_source = client.put(
         f"/sources/{source['id']}/versions/{source_version['id']}",
         json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
-        headers=tenant_a["headers"],
+        headers=regulatory_content_writer["headers"],
     ).json()
     release_response = client.post(
         "/regulatory-basis-releases",
@@ -420,7 +420,7 @@ def test_consistency_and_document_requirements_route_to_correct_subject_pools(cl
             "requirement_version_ids": [doc_requirement_version["id"], consistency_requirement_version["id"]],
             "rule_version_ids": [doc_rule_version["id"], consistency_rule_version["id"]],
         },
-        headers=tenant_a["headers"],
+        headers=regulatory_content_writer["headers"],
     )
     assert release_response.status_code == 200
 
@@ -458,9 +458,9 @@ def test_consistency_and_document_requirements_route_to_correct_subject_pools(cl
     assert by_subject["manufacturer_check"]["outcome"] == "MATCH"
 
 
-def test_extra_submitted_document_without_checklist_rule_is_ignored(client, tenant_a):
+def test_extra_submitted_document_without_checklist_rule_is_ignored(client, tenant_a, regulatory_content_writer):
     _build_document_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "not_exists", "field": "status"},
         output_type="FINDING_PROPOSAL",
         obligation_type="gmp_certificate",

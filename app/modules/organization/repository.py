@@ -42,3 +42,15 @@ class OrganizationRepository(BaseRepository[Organization]):
         )
 
         return self.db.scalar(statement)
+
+    def get_internal(self) -> Organization | None:
+        """
+        The single "tenant zero" organization (is_internal=True), if one
+        has been provisioned - used by internal_role_assignment to
+        validate that both the target of a grant and the person
+        proposing it are RegNova staff, not a customer-org account.
+        """
+
+        statement = select(Organization).where(Organization.is_internal.is_(True))
+
+        return self.db.scalar(statement)

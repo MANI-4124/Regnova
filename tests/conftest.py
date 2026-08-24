@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import uuid
 from collections.abc import Iterator
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +18,11 @@ from app.core.dependencies import get_db_session
 from app.main import app
 from app.modules.auth.jwt import create_access_token
 from app.modules.auth.security import hash_password
+from app.modules.internal_role_assignment.models import (
+    InternalRoleAssignment,
+    InternalRoleAssignmentStatus,
+    InternalRoleCode,
+)
 from app.modules.organization.models import Organization
 from app.modules.role.models import Role
 from app.modules.user.models import User
@@ -126,3 +135,97 @@ def tenant_a(db: Session) -> dict:
 @pytest.fixture()
 def tenant_b(db: Session) -> dict:
     return make_tenant(db, "B")
+
+
+def make_internal_user(db: Session, role_code: str | None, label: str) -> dict:
+    """
+    Create a User inside the tenant-zero (RegNova-internal) Organization,
+    creating that org if this test hasn't already, and optionally grant
+    it an already-APPROVED InternalRoleAssignment for role_code. Returns
+    the same shape as make_tenant, so callers can use ["headers"] the
+    same way. Direct ORM inserts (not an HTTP propose/decide round trip)
+    for the same reason _non_admin_headers builds its user directly -
+    there's no bootstrap CEO/HR account to drive that flow through yet.
+    """
+    organization = (
+        db.query(Organization).filter(Organization.is_internal.is_(True)).first()
+    )
+    if organization is None:
+        organization = Organization(
+            name="RegNova",
+            industry="Regulatory Technology",
+            country="US",
+            is_internal=True,
+        )
+        db.add(organization)
+        db.flush()
+
+    role = Role(
+        organization_id=organization.id,
+        code="EMPLOYEE",
+        name=f"Internal {label}",
+    )
+    db.add(role)
+    db.flush()
+
+    user = User(
+        organization_id=organization.id,
+        role_id=role.id,
+        first_name="Internal",
+        last_name=label,
+        email=f"internal-{label.lower()}-{uuid.uuid4()}@example.com",
+        password_hash=hash_password("Password123!"),
+    )
+    db.add(user)
+    db.flush()
+
+    if role_code is not None:
+        payload = {"user_id": str(user.id), "role_code": role_code, "scope": None}
+        content_hash = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, default=str).encode("utf-8"),
+        ).hexdigest()
+        assignment = InternalRoleAssignment(
+            user_id=user.id,
+            role_code=role_code,
+            scope=None,
+            status=InternalRoleAssignmentStatus.APPROVED.value,
+            proposed_by_user_id=user.id,
+            proposed_at=datetime.now(timezone.utc),
+            rationale="test setup",
+            approver_user_id=user.id,
+            decided_at=datetime.now(timezone.utc),
+            content_hash=content_hash,
+        )
+        db.add(assignment)
+        db.flush()
+
+    db.commit()
+
+    token = create_access_token(
+        subject=str(user.id),
+        additional_claims={
+            "organization_id": str(organization.id),
+            "role_id": str(role.id),
+        },
+    )
+
+    return {
+        "organization": organization,
+        "role": role,
+        "user": user,
+        "token": token,
+        "headers": {"Authorization": f"Bearer {token}"},
+    }
+
+
+@pytest.fixture()
+def regulatory_content_writer(db: Session) -> dict:
+    """
+    A RegNova-internal user holding an APPROVED REGULATORY_KNOWLEDGE_LEAD
+    InternalRoleAssignment - satisfies require_regulatory_content_writer,
+    the replacement for the old require_admin placeholder on Source/
+    Requirement/Rule/RegulatoryBasisRelease writes.
+    """
+    return make_internal_user(
+        db, InternalRoleCode.REGULATORY_KNOWLEDGE_LEAD.value, "KnowledgeLead",
+    )

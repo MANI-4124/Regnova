@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_db_session
 from app.modules.rbac.dependencies import (
-    require_admin,
     require_employee,
+    require_regulatory_content_writer,
 )
 from app.modules.user.models import User
 
@@ -59,7 +59,7 @@ def get_source_location(
 )
 def create_source_location(
     payload: SourceLocationCreate,
-    current_user: User = Depends(require_admin),  # interim placeholder - see CLAUDE.md
+    current_user: User = Depends(require_regulatory_content_writer),
     service: SourceLocationService = Depends(get_source_location_service),
 ):
     return service.create(payload)
@@ -72,7 +72,7 @@ def create_source_location(
 def update_source_location(
     location_id: UUID,
     payload: SourceLocationUpdate,
-    current_user: User = Depends(require_admin),  # interim placeholder - see CLAUDE.md
+    current_user: User = Depends(require_regulatory_content_writer),
     service: SourceLocationService = Depends(get_source_location_service),
 ):
     return service.update(location_id, payload)

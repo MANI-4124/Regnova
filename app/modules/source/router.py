@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_db_session
 from app.modules.rbac.dependencies import (
-    require_admin,
     require_employee,
+    require_regulatory_content_writer,
 )
 from app.modules.user.models import User
 
@@ -53,13 +53,7 @@ def get_source(
     response_model=SourceResponse,
 )
 def create_source(
-    # NOTE: require_admin here is an interim placeholder, not a real
-    # authorization decision. Source is RegNova-owned platform content,
-    # not customer-org data - this should be gated by a real "RegNova
-    # Knowledge Lead / authorized RA reviewer" actor check (spec FR-13),
-    # which doesn't exist in the RBAC model yet. See CLAUDE.md
-    # "Regulatory content ownership".
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_regulatory_content_writer),
     service: SourceService = Depends(get_source_service),
 ):
     return service.create()

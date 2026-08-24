@@ -32,8 +32,8 @@ def _create_state(client, tenant, product_id, product_version_id, market="Malays
     return response.json()
 
 
-def _create_requirement_version(client, tenant, **overrides):
-    requirement = client.post("/requirements", json={}, headers=tenant["headers"]).json()
+def _create_requirement_version(client, writer, **overrides):
+    requirement = client.post("/requirements", json={}, headers=writer["headers"]).json()
 
     payload = {
         "jurisdiction": "Malaysia",
@@ -52,24 +52,24 @@ def _create_requirement_version(client, tenant, **overrides):
     response = client.post(
         f"/requirements/{requirement['id']}/versions",
         json=payload,
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return requirement, response.json()
 
 
-def _activate_requirement_version(client, tenant, requirement, version):
+def _activate_requirement_version(client, writer, requirement, version):
     response = client.put(
         f"/requirements/{requirement['id']}/versions/{version['id']}",
         json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return response.json()
 
 
-def _create_rule_version(client, tenant, requirement_version_id, **overrides):
-    rule = client.post("/rules", json={}, headers=tenant["headers"]).json()
+def _create_rule_version(client, writer, requirement_version_id, **overrides):
+    rule = client.post("/rules", json={}, headers=writer["headers"]).json()
 
     payload = {
         "requirement_version_id": requirement_version_id,
@@ -82,24 +82,24 @@ def _create_rule_version(client, tenant, requirement_version_id, **overrides):
     response = client.post(
         f"/rules/{rule['id']}/versions",
         json=payload,
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return rule, response.json()
 
 
-def _activate_rule_version(client, tenant, rule, version):
+def _activate_rule_version(client, writer, rule, version):
     response = client.put(
         f"/rules/{rule['id']}/versions/{version['id']}",
         json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return response.json()
 
 
-def _create_active_release(client, tenant, rule_version_ids, requirement_version_ids):
-    source = client.post("/sources", headers=tenant["headers"]).json()
+def _create_active_release(client, writer, rule_version_ids, requirement_version_ids):
+    source = client.post("/sources", headers=writer["headers"]).json()
     source_version = client.post(
         f"/sources/{source['id']}/versions",
         json={
@@ -109,12 +109,12 @@ def _create_active_release(client, tenant, rule_version_ids, requirement_version
             "tier": 1,
             "source_type": "OFFICIAL_GUIDELINE",
         },
-        headers=tenant["headers"],
+        headers=writer["headers"],
     ).json()
     activated_source = client.put(
         f"/sources/{source['id']}/versions/{source_version['id']}",
         json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
-        headers=tenant["headers"],
+        headers=writer["headers"],
     ).json()
 
     response = client.post(
@@ -126,7 +126,7 @@ def _create_active_release(client, tenant, rule_version_ids, requirement_version
             "requirement_version_ids": requirement_version_ids,
             "rule_version_ids": rule_version_ids,
         },
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return response.json()
@@ -134,7 +134,7 @@ def _create_active_release(client, tenant, rule_version_ids, requirement_version
 
 def _build_label_rule(
     client,
-    tenant,
+    writer,
     *,
     condition,
     output_type="FINDING_PROPOSAL",
@@ -143,22 +143,22 @@ def _build_label_rule(
     **requirement_overrides,
 ):
     requirement, requirement_version = _create_requirement_version(
-        client, tenant, default_severity=default_severity, **requirement_overrides,
+        client, writer, default_severity=default_severity, **requirement_overrides,
     )
-    requirement_version = _activate_requirement_version(client, tenant, requirement, requirement_version)
+    requirement_version = _activate_requirement_version(client, writer, requirement, requirement_version)
 
     rule, rule_version = _create_rule_version(
         client,
-        tenant,
+        writer,
         requirement_version["id"],
         condition=condition,
         output_type=output_type,
         unknown_behavior=unknown_behavior,
     )
-    rule_version = _activate_rule_version(client, tenant, rule, rule_version)
+    rule_version = _activate_rule_version(client, writer, rule, rule_version)
 
     release = _create_active_release(
-        client, tenant,
+        client, writer,
         rule_version_ids=[rule_version["id"]],
         requirement_version_ids=[requirement_version["id"]],
     )
@@ -217,9 +217,9 @@ def _net_quantity_field(value="50 mL", confidence=0.95, location=None):
 # --- Tests -------------------------------------------------------------
 
 
-def test_label_missing_mandatory_field_proposes_finding(client, tenant_a):
+def test_label_missing_mandatory_field_proposes_finding(client, tenant_a, regulatory_content_writer):
     _build_label_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "not_exists", "field": "extracted"},
         output_type="FINDING_PROPOSAL",
         unknown_behavior="HUMAN_REVIEW",
@@ -253,9 +253,9 @@ def test_label_missing_mandatory_field_proposes_finding(client, tenant_a):
     assert findings[0]["subject_key"] == "net_quantity"
 
 
-def test_clean_high_confidence_label_field_is_compliant(client, tenant_a):
+def test_clean_high_confidence_label_field_is_compliant(client, tenant_a, regulatory_content_writer):
     _build_label_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "not_exists", "field": "extracted"},
         output_type="FINDING_PROPOSAL",
     )
@@ -274,7 +274,7 @@ def test_clean_high_confidence_label_field_is_compliant(client, tenant_a):
     assert _get_findings(client, tenant_a, state["id"]) == []
 
 
-def test_low_confidence_overrides_fail_closed_requirement_result(client, tenant_a):
+def test_low_confidence_overrides_fail_closed_requirement_result(client, tenant_a, regulatory_content_writer):
     """
     The core AC-FR-06-02 guarantee: a rule author declaring FAIL_CLOSED
     for missing-data cases must NOT get to silently force a definite
@@ -284,7 +284,7 @@ def test_low_confidence_overrides_fail_closed_requirement_result(client, tenant_
     """
 
     _build_label_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "equals", "field": "extracted", "value": "50 mL"},
         output_type="REQUIREMENT_RESULT",
         unknown_behavior="FAIL_CLOSED",
@@ -309,9 +309,9 @@ def test_low_confidence_overrides_fail_closed_requirement_result(client, tenant_
     assert detail["dimension_assessments"][0]["state"] == "HUMAN_REVIEW_REQUIRED"
 
 
-def test_low_confidence_overrides_request_input_requirement_result(client, tenant_a):
+def test_low_confidence_overrides_request_input_requirement_result(client, tenant_a, regulatory_content_writer):
     _build_label_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "equals", "field": "extracted", "value": "50 mL"},
         output_type="REQUIREMENT_RESULT",
         unknown_behavior="REQUEST_INPUT",
@@ -332,7 +332,7 @@ def test_low_confidence_overrides_request_input_requirement_result(client, tenan
     assert detail["dimension_assessments"][0]["state"] == "HUMAN_REVIEW_REQUIRED"
 
 
-def test_low_confidence_still_proposes_finding_despite_request_input(client, tenant_a):
+def test_low_confidence_still_proposes_finding_despite_request_input(client, tenant_a, regulatory_content_writer):
     """
     For a merely-missing field, REQUEST_INPUT suppresses the Finding
     entirely (see test_assessment_run_claims.py). Low confidence must
@@ -342,7 +342,7 @@ def test_low_confidence_still_proposes_finding_despite_request_input(client, ten
     """
 
     _build_label_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "equals", "field": "extracted", "value": "50 mL"},
         output_type="FINDING_PROPOSAL",
         unknown_behavior="REQUEST_INPUT",
@@ -371,9 +371,9 @@ def test_low_confidence_still_proposes_finding_despite_request_input(client, ten
     assert "REQUEST_INPUT" in rationale
 
 
-def test_finding_observed_location_populated_from_label_field(client, tenant_a):
+def test_finding_observed_location_populated_from_label_field(client, tenant_a, regulatory_content_writer):
     _build_label_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "not_exists", "field": "extracted"},
         output_type="FINDING_PROPOSAL",
     )
@@ -398,9 +398,9 @@ def test_finding_observed_location_populated_from_label_field(client, tenant_a):
     assert finding_detail["revisions"][0]["observed_location"] == location
 
 
-def test_requirement_result_predicate_inputs_include_extracted_confidence(client, tenant_a, db):
+def test_requirement_result_predicate_inputs_include_extracted_confidence(client, tenant_a, db, regulatory_content_writer):
     _build_label_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "equals", "field": "extracted", "value": "50 mL"},
         output_type="REQUIREMENT_RESULT",
         unknown_behavior="FAIL_CLOSED",

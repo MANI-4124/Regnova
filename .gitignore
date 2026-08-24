@@ -1,3 +1,4 @@
 .env
 __pycache__/
 *.pyc
+regnova_backend.egg-info/

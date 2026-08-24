@@ -52,6 +52,18 @@ class UserRepository(BaseRepository[User]):
 
         return self.db.scalar(statement)
 
+    def get_by_id_only(
+        self,
+        user_id: UUID,
+    ) -> User | None:
+        """
+        Unscoped lookup by id alone - used by internal_role_assignment,
+        which validates a target/proposer user against tenant-zero
+        membership rather than the caller's own organization_id.
+        """
+
+        return super().get_by_id(user_id)
+
     def get_by_email(
         self,
         organization_id: UUID,

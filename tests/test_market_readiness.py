@@ -50,8 +50,8 @@ def _update_state(client, tenant, product_id, state_id, **payload):
     return response.json()
 
 
-def _create_requirement_version(client, tenant, **overrides):
-    requirement = client.post("/requirements", json={}, headers=tenant["headers"]).json()
+def _create_requirement_version(client, writer, **overrides):
+    requirement = client.post("/requirements", json={}, headers=writer["headers"]).json()
 
     payload = {
         "jurisdiction": "Malaysia",
@@ -70,24 +70,24 @@ def _create_requirement_version(client, tenant, **overrides):
     response = client.post(
         f"/requirements/{requirement['id']}/versions",
         json=payload,
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return requirement, response.json()
 
 
-def _activate_requirement_version(client, tenant, requirement, version):
+def _activate_requirement_version(client, writer, requirement, version):
     response = client.put(
         f"/requirements/{requirement['id']}/versions/{version['id']}",
         json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return response.json()
 
 
-def _create_rule_version(client, tenant, requirement_version_id, **overrides):
-    rule = client.post("/rules", json={}, headers=tenant["headers"]).json()
+def _create_rule_version(client, writer, requirement_version_id, **overrides):
+    rule = client.post("/rules", json={}, headers=writer["headers"]).json()
 
     payload = {
         "requirement_version_id": requirement_version_id,
@@ -100,24 +100,24 @@ def _create_rule_version(client, tenant, requirement_version_id, **overrides):
     response = client.post(
         f"/rules/{rule['id']}/versions",
         json=payload,
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return rule, response.json()
 
 
-def _activate_rule_version(client, tenant, rule, version):
+def _activate_rule_version(client, writer, rule, version):
     response = client.put(
         f"/rules/{rule['id']}/versions/{version['id']}",
         json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return response.json()
 
 
-def _create_active_release(client, tenant, rule_version_ids, requirement_version_ids, market="Malaysia"):
-    source = client.post("/sources", headers=tenant["headers"]).json()
+def _create_active_release(client, writer, rule_version_ids, requirement_version_ids, market="Malaysia"):
+    source = client.post("/sources", headers=writer["headers"]).json()
     source_version = client.post(
         f"/sources/{source['id']}/versions",
         json={
@@ -127,12 +127,12 @@ def _create_active_release(client, tenant, rule_version_ids, requirement_version
             "tier": 1,
             "source_type": "OFFICIAL_GUIDELINE",
         },
-        headers=tenant["headers"],
+        headers=writer["headers"],
     ).json()
     activated_source = client.put(
         f"/sources/{source['id']}/versions/{source_version['id']}",
         json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
-        headers=tenant["headers"],
+        headers=writer["headers"],
     ).json()
 
     response = client.post(
@@ -144,21 +144,21 @@ def _create_active_release(client, tenant, rule_version_ids, requirement_version
             "requirement_version_ids": requirement_version_ids,
             "rule_version_ids": rule_version_ids,
         },
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return response.json()
 
 
-def _build_claims_rule(client, tenant, *, condition, output_type="REQUIREMENT_RESULT", **overrides):
-    requirement, requirement_version = _create_requirement_version(client, tenant, **overrides)
-    requirement_version = _activate_requirement_version(client, tenant, requirement, requirement_version)
+def _build_claims_rule(client, writer, *, condition, output_type="REQUIREMENT_RESULT", **overrides):
+    requirement, requirement_version = _create_requirement_version(client, writer, **overrides)
+    requirement_version = _activate_requirement_version(client, writer, requirement, requirement_version)
 
     rule, rule_version = _create_rule_version(
-        client, tenant, requirement_version["id"],
+        client, writer, requirement_version["id"],
         condition=condition, output_type=output_type,
     )
-    rule_version = _activate_rule_version(client, tenant, rule, rule_version)
+    rule_version = _activate_rule_version(client, writer, rule, rule_version)
 
     return requirement_version, rule_version
 
@@ -189,17 +189,17 @@ def _claims_facts(claim_id="c1", wording="clinically proven"):
     return {"CLAIMS": {"product": {}, "claims": [{"claim_id": claim_id, "wording": wording}]}}
 
 
-def _setup_ready_state(client, tenant, market="Malaysia"):
+def _setup_ready_state(client, tenant, writer, market="Malaysia"):
     """One CLAIMS requirement/rule, published version, active release, state."""
 
     requirement_version, rule_version = _build_claims_rule(
-        client, tenant,
+        client, writer,
         condition={"op": "exists", "field": "wording"},
         output_type="REQUIREMENT_RESULT",
         market=market, jurisdiction=market,
     )
     _create_active_release(
-        client, tenant,
+        client, writer,
         rule_version_ids=[rule_version["id"]],
         requirement_version_ids=[requirement_version["id"]],
         market=market,
@@ -231,8 +231,8 @@ def test_preflight_reports_all_failures_not_just_first(client, tenant_a):
     assert "NO_REGULATORY_BASIS" in message
 
 
-def test_preflight_passes_with_published_version_and_active_release(client, tenant_a):
-    _, _, state = _setup_ready_state(client, tenant_a)
+def test_preflight_passes_with_published_version_and_active_release(client, tenant_a, regulatory_content_writer):
+    _, _, state = _setup_ready_state(client, tenant_a, regulatory_content_writer)
 
     response = _run_market_readiness(client, tenant_a, state["id"], _claims_facts())
     assert response.status_code == 200
@@ -241,8 +241,8 @@ def test_preflight_passes_with_published_version_and_active_release(client, tena
 # --- Snapshot creation and gate write-back --------------------------------
 
 
-def test_market_readiness_run_creates_snapshot_and_defaults_to_g0_with_unbuilt_dimensions(client, tenant_a):
-    product, version, state = _setup_ready_state(client, tenant_a)
+def test_market_readiness_run_creates_snapshot_and_defaults_to_g0_with_unbuilt_dimensions(client, tenant_a, regulatory_content_writer):
+    product, version, state = _setup_ready_state(client, tenant_a, regulatory_content_writer)
 
     response = _run_market_readiness(client, tenant_a, state["id"], _claims_facts())
     assert response.status_code == 200
@@ -266,8 +266,8 @@ def test_market_readiness_run_creates_snapshot_and_defaults_to_g0_with_unbuilt_d
 # --- Reuse vs rerun --------------------------------------------------------
 
 
-def test_second_run_reuses_unchanged_dimension(client, tenant_a):
-    _, _, state = _setup_ready_state(client, tenant_a)
+def test_second_run_reuses_unchanged_dimension(client, tenant_a, regulatory_content_writer):
+    _, _, state = _setup_ready_state(client, tenant_a, regulatory_content_writer)
 
     first = _run_market_readiness(client, tenant_a, state["id"], _claims_facts()).json()
     # No "CLAIMS" key this time - nothing to rerun with, should reuse.
@@ -280,7 +280,7 @@ def test_second_run_reuses_unchanged_dimension(client, tenant_a):
     )
 
 
-def test_supplying_facts_forces_rerun_even_if_otherwise_reusable(client, tenant_a):
+def test_supplying_facts_forces_rerun_even_if_otherwise_reusable(client, tenant_a, regulatory_content_writer):
     """
     Self-sufficient by construction: run 1 -> 2 (no facts) proves reuse
     is genuinely happening under identical conditions (a control,
@@ -290,7 +290,7 @@ def test_supplying_facts_forces_rerun_even_if_otherwise_reusable(client, tenant_
     about.
     """
 
-    _, _, state = _setup_ready_state(client, tenant_a)
+    _, _, state = _setup_ready_state(client, tenant_a, regulatory_content_writer)
 
     first = _run_market_readiness(client, tenant_a, state["id"], _claims_facts()).json()
     second = _run_market_readiness(client, tenant_a, state["id"], {}).json()
@@ -304,8 +304,8 @@ def test_supplying_facts_forces_rerun_even_if_otherwise_reusable(client, tenant_
     )
 
 
-def test_changing_product_version_forces_rerun_and_marks_prior_snapshot_stale(client, tenant_a):
-    product, version, state = _setup_ready_state(client, tenant_a)
+def test_changing_product_version_forces_rerun_and_marks_prior_snapshot_stale(client, tenant_a, regulatory_content_writer):
+    product, version, state = _setup_ready_state(client, tenant_a, regulatory_content_writer)
 
     first = _run_market_readiness(client, tenant_a, state["id"], _claims_facts()).json()
 
@@ -329,8 +329,8 @@ def test_changing_product_version_forces_rerun_and_marks_prior_snapshot_stale(cl
     assert by_id[second["id"]]["is_current"] is True
 
 
-def test_new_snapshot_marks_previous_snapshot_superseded(client, tenant_a):
-    _, _, state = _setup_ready_state(client, tenant_a)
+def test_new_snapshot_marks_previous_snapshot_superseded(client, tenant_a, regulatory_content_writer):
+    _, _, state = _setup_ready_state(client, tenant_a, regulatory_content_writer)
 
     first = _run_market_readiness(client, tenant_a, state["id"], _claims_facts()).json()
     second = _run_market_readiness(client, tenant_a, state["id"], _claims_facts()).json()
@@ -346,7 +346,7 @@ def test_new_snapshot_marks_previous_snapshot_superseded(client, tenant_a):
 # --- Scoring (B5.2) --------------------------------------------------------
 
 
-def test_dimension_score_avoids_double_counting_and_applies_alone_scores_zero(client, tenant_a):
+def test_dimension_score_avoids_double_counting_and_applies_alone_scores_zero(client, tenant_a, regulatory_content_writer):
     """
     req_a has TWO rules (APPLICABILITY + REQUIREMENT_RESULT) both
     matching against the same claim - its importance_weight (2.0) must
@@ -361,36 +361,36 @@ def test_dimension_score_avoids_double_counting_and_applies_alone_scores_zero(cl
     """
 
     req_a, applicability_rule_a = _build_claims_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "exists", "field": "wording"},
         output_type="APPLICABILITY",
         obligation_type="REQ_A", importance_weight=2.0,
     )
     satisfaction_rule_a_parent, satisfaction_rule_a = _create_rule_version(
-        client, tenant_a, req_a["id"],
+        client, regulatory_content_writer, req_a["id"],
         condition={"op": "equals", "field": "wording", "value": "clinically proven"},
         output_type="REQUIREMENT_RESULT",
     )
     satisfaction_rule_a = _activate_rule_version(
-        client, tenant_a, satisfaction_rule_a_parent, satisfaction_rule_a,
+        client, regulatory_content_writer, satisfaction_rule_a_parent, satisfaction_rule_a,
     )
 
     req_b, applicability_rule_b = _build_claims_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "equals", "field": "wording", "value": "no such value"},
         output_type="APPLICABILITY",
         obligation_type="REQ_B", importance_weight=1.0,
     )
 
     req_c, applicability_rule_c = _build_claims_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "exists", "field": "wording"},
         output_type="APPLICABILITY",
         obligation_type="REQ_C", importance_weight=1.0,
     )
 
     _create_active_release(
-        client, tenant_a,
+        client, regulatory_content_writer,
         rule_version_ids=[
             applicability_rule_a["id"], satisfaction_rule_a["id"],
             applicability_rule_b["id"], applicability_rule_c["id"],

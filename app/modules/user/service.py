@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.modules.audit.repository import OutboxRepository
 
 from .exceptions import (
+    PermanentAdminProtected,
     UserAlreadyExists,
     UserNotFound,
 )
@@ -133,6 +134,15 @@ password_hash=hash_password(payload.password),
             exclude_unset=True,
         )
 
+        # Structural, not a role check on the caller - refused
+        # unconditionally, even for another ADMIN, even for the CEO's
+        # own request. See User.is_permanent_admin.
+        if user.is_permanent_admin and (
+            ("role_id" in update_data and update_data["role_id"] != user.role_id)
+            or update_data.get("is_active") is False
+        ):
+            raise PermanentAdminProtected()
+
         membership_changed = bool(
             {"role_id", "is_active"} & update_data.keys()
         )
@@ -177,6 +187,9 @@ password_hash=hash_password(payload.password),
 
         if user is None:
             raise UserNotFound()
+
+        if user.is_permanent_admin:
+            raise PermanentAdminProtected()
 
         self.outbox.append(
             organization_id=organization_id,

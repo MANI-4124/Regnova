@@ -67,8 +67,8 @@ def _create_state(client, tenant, product_id, product_version_id, market="Malays
     return response.json()
 
 
-def _create_requirement_version(client, tenant, **overrides):
-    requirement = client.post("/requirements", json={}, headers=tenant["headers"]).json()
+def _create_requirement_version(client, writer, **overrides):
+    requirement = client.post("/requirements", json={}, headers=writer["headers"]).json()
 
     payload = {
         "jurisdiction": "Malaysia",
@@ -87,24 +87,24 @@ def _create_requirement_version(client, tenant, **overrides):
     response = client.post(
         f"/requirements/{requirement['id']}/versions",
         json=payload,
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return requirement, response.json()
 
 
-def _activate_requirement_version(client, tenant, requirement, version):
+def _activate_requirement_version(client, writer, requirement, version):
     response = client.put(
         f"/requirements/{requirement['id']}/versions/{version['id']}",
         json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return response.json()
 
 
-def _create_rule_version(client, tenant, requirement_version_id, **overrides):
-    rule = client.post("/rules", json={}, headers=tenant["headers"]).json()
+def _create_rule_version(client, writer, requirement_version_id, **overrides):
+    rule = client.post("/rules", json={}, headers=writer["headers"]).json()
 
     payload = {
         "requirement_version_id": requirement_version_id,
@@ -117,24 +117,24 @@ def _create_rule_version(client, tenant, requirement_version_id, **overrides):
     response = client.post(
         f"/rules/{rule['id']}/versions",
         json=payload,
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return rule, response.json()
 
 
-def _activate_rule_version(client, tenant, rule, version):
+def _activate_rule_version(client, writer, rule, version):
     response = client.put(
         f"/rules/{rule['id']}/versions/{version['id']}",
         json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return response.json()
 
 
-def _create_active_release(client, tenant, rule_version_ids, requirement_version_ids):
-    source = client.post("/sources", headers=tenant["headers"]).json()
+def _create_active_release(client, writer, rule_version_ids, requirement_version_ids):
+    source = client.post("/sources", headers=writer["headers"]).json()
     source_version = client.post(
         f"/sources/{source['id']}/versions",
         json={
@@ -144,12 +144,12 @@ def _create_active_release(client, tenant, rule_version_ids, requirement_version
             "tier": 1,
             "source_type": "OFFICIAL_GUIDELINE",
         },
-        headers=tenant["headers"],
+        headers=writer["headers"],
     ).json()
     activated_source = client.put(
         f"/sources/{source['id']}/versions/{source_version['id']}",
         json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
-        headers=tenant["headers"],
+        headers=writer["headers"],
     ).json()
 
     response = client.post(
@@ -161,7 +161,7 @@ def _create_active_release(client, tenant, rule_version_ids, requirement_version
             "requirement_version_ids": requirement_version_ids,
             "rule_version_ids": rule_version_ids,
         },
-        headers=tenant["headers"],
+        headers=writer["headers"],
     )
     assert response.status_code == 200
     return response.json()
@@ -169,7 +169,7 @@ def _create_active_release(client, tenant, rule_version_ids, requirement_version
 
 def _build_claims_rule(
     client,
-    tenant,
+    writer,
     *,
     condition,
     output_type="FINDING_PROPOSAL",
@@ -184,22 +184,22 @@ def _build_claims_rule(
     """
 
     requirement, requirement_version = _create_requirement_version(
-        client, tenant, default_severity=default_severity, **requirement_overrides,
+        client, writer, default_severity=default_severity, **requirement_overrides,
     )
-    requirement_version = _activate_requirement_version(client, tenant, requirement, requirement_version)
+    requirement_version = _activate_requirement_version(client, writer, requirement, requirement_version)
 
     rule, rule_version = _create_rule_version(
         client,
-        tenant,
+        writer,
         requirement_version["id"],
         condition=condition,
         output_type=output_type,
         unknown_behavior=unknown_behavior,
     )
-    rule_version = _activate_rule_version(client, tenant, rule, rule_version)
+    rule_version = _activate_rule_version(client, writer, rule, rule_version)
 
     release = _create_active_release(
-        client, tenant,
+        client, writer,
         rule_version_ids=[rule_version["id"]],
         requirement_version_ids=[requirement_version["id"]],
     )
@@ -249,9 +249,9 @@ def _get_findings(client, tenant, state_id):
 # --- Tests -------------------------------------------------------------
 
 
-def test_finding_proposal_on_match_marks_dimension_non_compliant(client, tenant_a):
+def test_finding_proposal_on_match_marks_dimension_non_compliant(client, tenant_a, regulatory_content_writer):
     _build_claims_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "in", "field": "wording", "value": PROHIBITED_WORDINGS},
         output_type="FINDING_PROPOSAL",
         unknown_behavior="HUMAN_REVIEW",
@@ -291,9 +291,9 @@ def test_finding_proposal_on_match_marks_dimension_non_compliant(client, tenant_
     assert "Condition matched" in finding_detail["revisions"][0]["rationale"]
 
 
-def test_clean_claim_produces_no_finding_and_compliant_dimension(client, tenant_a):
+def test_clean_claim_produces_no_finding_and_compliant_dimension(client, tenant_a, regulatory_content_writer):
     _build_claims_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "in", "field": "wording", "value": PROHIBITED_WORDINGS},
         output_type="FINDING_PROPOSAL",
     )
@@ -312,9 +312,9 @@ def test_clean_claim_produces_no_finding_and_compliant_dimension(client, tenant_
     assert _get_findings(client, tenant_a, state["id"]) == []
 
 
-def test_fail_closed_missing_input_proposes_finding_anyway(client, tenant_a):
+def test_fail_closed_missing_input_proposes_finding_anyway(client, tenant_a, regulatory_content_writer):
     _build_claims_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "equals", "field": "substantiation_status", "value": "expired"},
         output_type="FINDING_PROPOSAL",
         unknown_behavior="FAIL_CLOSED",
@@ -343,9 +343,9 @@ def test_fail_closed_missing_input_proposes_finding_anyway(client, tenant_a):
     assert "fail-closed" in finding_detail["revisions"][0]["rationale"]
 
 
-def test_request_input_missing_creates_no_finding_and_pending_input(client, tenant_a):
+def test_request_input_missing_creates_no_finding_and_pending_input(client, tenant_a, regulatory_content_writer):
     _build_claims_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "equals", "field": "substantiation_status", "value": "expired"},
         output_type="FINDING_PROPOSAL",
         unknown_behavior="REQUEST_INPUT",
@@ -365,9 +365,9 @@ def test_request_input_missing_creates_no_finding_and_pending_input(client, tena
     assert _get_findings(client, tenant_a, state["id"]) == []
 
 
-def test_human_review_missing_input_marks_requirement_result_dimension_human_review(client, tenant_a):
+def test_human_review_missing_input_marks_requirement_result_dimension_human_review(client, tenant_a, regulatory_content_writer):
     _build_claims_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "equals", "field": "substantiation_status", "value": "current"},
         output_type="REQUIREMENT_RESULT",
         unknown_behavior="HUMAN_REVIEW",
@@ -387,9 +387,9 @@ def test_human_review_missing_input_marks_requirement_result_dimension_human_rev
     assert _get_findings(client, tenant_a, state["id"]) == []
 
 
-def test_fail_closed_requirement_result_missing_input_marks_non_compliant(client, tenant_a):
+def test_fail_closed_requirement_result_missing_input_marks_non_compliant(client, tenant_a, regulatory_content_writer):
     _build_claims_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "equals", "field": "substantiation_status", "value": "current"},
         output_type="REQUIREMENT_RESULT",
         unknown_behavior="FAIL_CLOSED",
@@ -408,9 +408,9 @@ def test_fail_closed_requirement_result_missing_input_marks_non_compliant(client
     assert detail["dimension_assessments"][0]["state"] == "NON_COMPLIANT"
 
 
-def test_applicability_does_not_apply_marks_dimension_not_applicable(client, tenant_a):
+def test_applicability_does_not_apply_marks_dimension_not_applicable(client, tenant_a, regulatory_content_writer):
     _build_claims_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "equals", "field": "product.category_id", "value": "drug"},
         output_type="APPLICABILITY",
         unknown_behavior="HUMAN_REVIEW",
@@ -430,9 +430,9 @@ def test_applicability_does_not_apply_marks_dimension_not_applicable(client, ten
     assert detail["dimension_assessments"][0]["state"] == "NOT_APPLICABLE"
 
 
-def test_rerun_reuses_same_finding_with_incrementing_revision(client, tenant_a):
+def test_rerun_reuses_same_finding_with_incrementing_revision(client, tenant_a, regulatory_content_writer):
     _build_claims_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "in", "field": "wording", "value": PROHIBITED_WORDINGS},
         output_type="FINDING_PROPOSAL",
     )
@@ -478,9 +478,9 @@ def test_create_assessment_run_without_active_release_returns_409(client, tenant
     assert response.status_code == 409
 
 
-def test_create_assessment_run_unsupported_dimension_returns_400(client, tenant_a):
+def test_create_assessment_run_unsupported_dimension_returns_400(client, tenant_a, regulatory_content_writer):
     _build_claims_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "exists", "field": "wording"},
         output_type="FINDING_PROPOSAL",
     )
@@ -500,9 +500,9 @@ def test_create_assessment_run_unsupported_dimension_returns_400(client, tenant_
     assert response.status_code == 400
 
 
-def test_assessment_runs_are_isolated_across_organizations(client, tenant_a, tenant_b):
+def test_assessment_runs_are_isolated_across_organizations(client, tenant_a, tenant_b, regulatory_content_writer):
     _build_claims_rule(
-        client, tenant_a,
+        client, regulatory_content_writer,
         condition={"op": "exists", "field": "wording"},
         output_type="FINDING_PROPOSAL",
     )
@@ -562,7 +562,7 @@ def test_requirement_result_rejects_outcome_outside_closed_vocabulary(db):
         pass
 
 
-def test_engine_validated_against_real_persisted_rule_version_test_fixtures(client, tenant_a):
+def test_engine_validated_against_real_persisted_rule_version_test_fixtures(client, tenant_a, regulatory_content_writer):
     """
     Creates a real RuleVersion via the API with test_fixtures populated
     (synthetic Claims data), fetches it back, and validates the engine
@@ -570,8 +570,8 @@ def test_engine_validated_against_real_persisted_rule_version_test_fixtures(clie
     local dict shaped like it.
     """
 
-    requirement, requirement_version = _create_requirement_version(client, tenant_a)
-    requirement_version = _activate_requirement_version(client, tenant_a, requirement, requirement_version)
+    requirement, requirement_version = _create_requirement_version(client, regulatory_content_writer)
+    requirement_version = _activate_requirement_version(client, regulatory_content_writer, requirement, requirement_version)
 
     condition = {
         "op": "in",
@@ -586,7 +586,7 @@ def test_engine_validated_against_real_persisted_rule_version_test_fixtures(clie
     ]
 
     rule, rule_version = _create_rule_version(
-        client, tenant_a, requirement_version["id"],
+        client, regulatory_content_writer, requirement_version["id"],
         condition=condition,
         output_type="FINDING_PROPOSAL",
         test_fixtures=test_fixtures,
