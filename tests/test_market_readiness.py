@@ -263,6 +263,117 @@ def test_market_readiness_run_creates_snapshot_and_defaults_to_g0_with_unbuilt_d
     assert state_detail["gate"] == "G0"
 
 
+# --- Subject-list dimension shape (non-LABEL/DOCUMENTS) -------------------
+
+
+def test_dimension_without_claims_key_evaluates_flat_facts_as_single_subject(client, tenant_a, regulatory_content_writer):
+    claims_requirement_version, claims_rule_version = _build_claims_rule(
+        client, regulatory_content_writer,
+        condition={"op": "exists", "field": "wording"},
+        output_type="REQUIREMENT_RESULT",
+    )
+    ingredients_requirement_version, ingredients_rule_version = _build_claims_rule(
+        client, regulatory_content_writer,
+        condition={"op": "exists", "field": "daily_dosage_mg"},
+        output_type="REQUIREMENT_RESULT",
+        dimension="INGREDIENTS", category="Ingredients", obligation_type="DOSAGE_LIMIT",
+    )
+    _create_active_release(
+        client, regulatory_content_writer,
+        rule_version_ids=[claims_rule_version["id"], ingredients_rule_version["id"]],
+        requirement_version_ids=[claims_requirement_version["id"], ingredients_requirement_version["id"]],
+    )
+
+    product = _create_product(client, tenant_a)
+    version = _create_version(client, tenant_a, product["id"])
+    _publish_version(client, tenant_a, product["id"], version["id"])
+    state = _create_state(client, tenant_a, product["id"], version["id"])
+
+    input_facts = _claims_facts()
+    input_facts["INGREDIENTS"] = {"product": {}, "daily_dosage_mg": 1200}
+
+    response = _run_market_readiness(client, tenant_a, state["id"], input_facts)
+    assert response.status_code == 200
+    snapshot = response.json()
+
+    # No "claims" key was submitted for INGREDIENTS - the whole payload
+    # (minus "product") is treated as one implicit subject, so the
+    # exists(daily_dosage_mg) rule matches and the dimension resolves,
+    # rather than silently reading UNKNOWN or NO_SUBJECTS_RESOLVED.
+    assert snapshot["dimension_summary"]["INGREDIENTS"]["state"] == "COMPLIANT"
+
+
+def test_dimension_with_rules_and_no_submitted_facts_is_no_subjects_resolved(client, tenant_a, regulatory_content_writer):
+    claims_requirement_version, claims_rule_version = _build_claims_rule(
+        client, regulatory_content_writer,
+        condition={"op": "exists", "field": "wording"},
+        output_type="REQUIREMENT_RESULT",
+    )
+    ingredients_requirement_version, ingredients_rule_version = _build_claims_rule(
+        client, regulatory_content_writer,
+        condition={"op": "exists", "field": "daily_dosage_mg"},
+        output_type="REQUIREMENT_RESULT",
+        dimension="INGREDIENTS", category="Ingredients", obligation_type="DOSAGE_LIMIT",
+    )
+    _create_active_release(
+        client, regulatory_content_writer,
+        rule_version_ids=[claims_rule_version["id"], ingredients_rule_version["id"]],
+        requirement_version_ids=[claims_requirement_version["id"], ingredients_requirement_version["id"]],
+    )
+
+    product = _create_product(client, tenant_a)
+    version = _create_version(client, tenant_a, product["id"])
+    _publish_version(client, tenant_a, product["id"], version["id"])
+    state = _create_state(client, tenant_a, product["id"], version["id"])
+
+    # INGREDIENTS has active rules but nothing is submitted for it this
+    # run (only CLAIMS is) - this must read distinctly from a dimension
+    # with no rule content at all (e.g. TESTING below), not silently
+    # UNKNOWN.
+    response = _run_market_readiness(client, tenant_a, state["id"], _claims_facts())
+    assert response.status_code == 200
+    snapshot = response.json()
+
+    assert snapshot["dimension_summary"]["INGREDIENTS"]["state"] == "NO_SUBJECTS_RESOLVED"
+    assert snapshot["dimension_summary"]["TESTING"]["state"] == "UNKNOWN"
+    assert "DIMENSION_NO_SUBJECTS_RESOLVED" in snapshot["readiness_reason_codes"]
+    assert "DIMENSION_UNKNOWN" in snapshot["readiness_reason_codes"]
+    assert snapshot["overall_gate"] == "G0"
+
+
+def test_dimension_with_rules_and_explicit_empty_claims_list_is_no_subjects_resolved(client, tenant_a, regulatory_content_writer):
+    claims_requirement_version, claims_rule_version = _build_claims_rule(
+        client, regulatory_content_writer,
+        condition={"op": "exists", "field": "wording"},
+        output_type="REQUIREMENT_RESULT",
+    )
+    ingredients_requirement_version, ingredients_rule_version = _build_claims_rule(
+        client, regulatory_content_writer,
+        condition={"op": "exists", "field": "daily_dosage_mg"},
+        output_type="REQUIREMENT_RESULT",
+        dimension="INGREDIENTS", category="Ingredients", obligation_type="DOSAGE_LIMIT",
+    )
+    _create_active_release(
+        client, regulatory_content_writer,
+        rule_version_ids=[claims_rule_version["id"], ingredients_rule_version["id"]],
+        requirement_version_ids=[claims_requirement_version["id"], ingredients_requirement_version["id"]],
+    )
+
+    product = _create_product(client, tenant_a)
+    version = _create_version(client, tenant_a, product["id"])
+    _publish_version(client, tenant_a, product["id"], version["id"])
+    state = _create_state(client, tenant_a, product["id"], version["id"])
+
+    input_facts = _claims_facts()
+    input_facts["INGREDIENTS"] = {"product": {}, "claims": []}
+
+    response = _run_market_readiness(client, tenant_a, state["id"], input_facts)
+    assert response.status_code == 200
+    snapshot = response.json()
+
+    assert snapshot["dimension_summary"]["INGREDIENTS"]["state"] == "NO_SUBJECTS_RESOLVED"
+
+
 # --- Reuse vs rerun --------------------------------------------------------
 
 

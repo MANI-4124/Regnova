@@ -66,6 +66,16 @@ class DimensionAssessmentState(str, Enum):
     COMPLIANT = "COMPLIANT"
     NON_COMPLIANT = "NON_COMPLIANT"
     NOT_APPLICABLE = "NOT_APPLICABLE"
+    # Distinct from UNKNOWN: this dimension has active rule content, but
+    # the submitted facts resolved to zero subjects to evaluate them
+    # against (nothing submitted, or an explicit empty list) - a
+    # caller/data-shape problem, not "nothing built here yet". Also
+    # distinct from PENDING_INPUT: that state requires at least one
+    # StepRun to exist (a rule WAS evaluated and a specific condition
+    # field was missing); this fires before any rule condition is ever
+    # evaluated, with no per-rule unknown_behavior signal to consult.
+    # See CLAUDE.md "Assessment engine".
+    NO_SUBJECTS_RESOLVED = "NO_SUBJECTS_RESOLVED"
 
 
 _JSON = JSON().with_variant(JSONB(), "postgresql")

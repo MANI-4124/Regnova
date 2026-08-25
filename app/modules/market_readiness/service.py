@@ -358,6 +358,12 @@ class MarketReadinessService:
           satisfied. Whatever would otherwise be G4 is capped at G3,
           with a distinct reason code from the real HUMAN_REVIEW
           case so the two are never confused.
+        - NO_SUBJECTS_RESOLVED blocks at G0 alongside UNKNOWN, with its
+          own reason code - both mean "no opinion could be formed for
+          this dimension", which is a different (earlier, more
+          foundational) kind of gap than G1's "an opinion was formed and
+          it's blocking". See DimensionAssessmentState in
+          assessment_run/models.py.
         """
 
         reasons: list[str] = []
@@ -366,8 +372,15 @@ class MarketReadinessService:
             info["state"] == DimensionAssessmentState.UNKNOWN.value
             for info in dimension_summary.values()
         )
-        if dimension_unknown:
-            reasons.append("DIMENSION_UNKNOWN")
+        dimension_no_subjects_resolved = any(
+            info["state"] == DimensionAssessmentState.NO_SUBJECTS_RESOLVED.value
+            for info in dimension_summary.values()
+        )
+        if dimension_unknown or dimension_no_subjects_resolved:
+            if dimension_unknown:
+                reasons.append("DIMENSION_UNKNOWN")
+            if dimension_no_subjects_resolved:
+                reasons.append("DIMENSION_NO_SUBJECTS_RESOLVED")
             return ProductMarketStateGate.G0.value, reasons
 
         critical_open = any(f["severity"] == RequirementSeverity.CRITICAL.value for f in open_findings)

@@ -173,12 +173,15 @@ class AssessmentRunService:
         validation, which is `create_and_run`'s guardrail for direct
         single-dimension callers via POST /assessment-runs. Market
         Readiness deliberately attempts all eight canonical dimensions
-        every time; the five with no rule content yet naturally settle
-        at DimensionAssessmentState.UNKNOWN (no rules -> no StepRuns ->
-        `_derive_dimension_state`'s own `if not steps: return UNKNOWN`),
-        which is exactly the signal G0's "required dimension Unknown"
-        gate condition needs - not a reason to special-case anything
-        here.
+        every time; a dimension with no rule content at all naturally
+        settles at DimensionAssessmentState.UNKNOWN (no rules -> no
+        StepRuns -> `_derive_dimension_state`'s own
+        `if not steps: return UNKNOWN`), which is exactly the signal
+        G0's "required dimension Unknown" gate condition needs - not a
+        reason to special-case anything here. A dimension that DOES have
+        rule content but resolves zero subjects from the submitted facts
+        is a different, explicit state - see
+        DimensionAssessmentState.NO_SUBJECTS_RESOLVED in `_run_dimension`.
         """
 
         self._run_dimension(run, dimension, dimension_facts)
@@ -197,12 +200,28 @@ class AssessmentRunService:
 
         if dimension == "DOCUMENTS":
             self._run_documents_dimension(run, dimension_facts, rule_versions)
+            state = self._derive_dimension_state(
+                run.id, dimension, run.organization_id, run.product_market_state_id,
+            )
         else:
-            self._run_subject_list_dimension(run, dimension, dimension_facts, rule_versions)
+            resolved_subject_count = self._run_subject_list_dimension(
+                run, dimension, dimension_facts, rule_versions,
+            )
+            if rule_versions and resolved_subject_count == 0:
+                # Active rules exist for this dimension, but nothing
+                # resolved to a subject to run them against - distinct
+                # from "nothing built here yet" (see
+                # DimensionAssessmentState.NO_SUBJECTS_RESOLVED). Bypasses
+                # _derive_dimension_state entirely: with zero StepRuns
+                # either way, its own `if not steps: return UNKNOWN`
+                # would otherwise silently produce the same UNKNOWN as
+                # the no-rules-at-all case.
+                state = DimensionAssessmentState.NO_SUBJECTS_RESOLVED.value
+            else:
+                state = self._derive_dimension_state(
+                    run.id, dimension, run.organization_id, run.product_market_state_id,
+                )
 
-        state = self._derive_dimension_state(
-            run.id, dimension, run.organization_id, run.product_market_state_id,
-        )
         assessment = DimensionAssessment(
             assessment_run_id=run.id,
             dimension=dimension,
@@ -218,7 +237,7 @@ class AssessmentRunService:
         dimension: str,
         dimension_facts: dict[str, Any],
         rule_versions: list,
-    ) -> None:
+    ) -> int:
         """
         Claims/Label shape: the caller enumerates the complete subject
         list, and every active rule for the dimension runs against every
@@ -226,6 +245,21 @@ class AssessmentRunService:
         ("claims" vs "label_fields") rather than a unified "items" key -
         confirmed explicitly rather than touching the already-shipped
         Claims contract.
+
+        Any other dimension (INGREDIENTS, CLASSIFICATION_ELIGIBILITY,
+        TESTING, ...) has no dedicated list shape of its own. If the
+        caller submits a "claims" key anyway, it's honored exactly like
+        Claims (a dimension whose rules genuinely want to iterate a list
+        of items - e.g. one dosage-limit check per ingredient - can use
+        it). Otherwise, whatever the caller submitted (everything except
+        "product") is treated as ONE implicit subject, so a flat,
+        non-list fact set (a single risk-class value, a single dosage
+        reading) still gets exactly one evaluation with subject_key=None,
+        rather than being silently unreachable through this method.
+        Returns the number of subjects resolved, so the caller can tell
+        "zero subjects because nothing was submitted/matched" apart from
+        "zero subjects because this dimension has no rules at all" - see
+        DimensionAssessmentState.NO_SUBJECTS_RESOLVED.
         """
 
         product_facts = dimension_facts.get("product", {})
@@ -235,16 +269,24 @@ class AssessmentRunService:
                 for item in dimension_facts.get("label_fields", [])
             ]
             subject_key_field = "field_key"
-        else:
-            subjects = dimension_facts.get("claims", [])
+        elif "claims" in dimension_facts:
+            subjects = dimension_facts["claims"]
             subject_key_field = "claim_id"
+        elif dimension_facts:
+            subjects = [{k: v for k, v in dimension_facts.items() if k != "product"}]
+            subject_key_field = None
+        else:
+            subjects = []
+            subject_key_field = None
 
         for subject in subjects:
-            subject_key = subject.get(subject_key_field)
+            subject_key = subject.get(subject_key_field) if subject_key_field else None
             subject_facts = {"product": product_facts, **subject}
 
             for rule_version in rule_versions:
                 self._run_step(run, dimension, rule_version, subject_key, subject_facts)
+
+        return len(subjects)
 
     def _run_documents_dimension(
         self,
