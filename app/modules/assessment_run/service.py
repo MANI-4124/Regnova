@@ -200,7 +200,9 @@ class AssessmentRunService:
         else:
             self._run_subject_list_dimension(run, dimension, dimension_facts, rule_versions)
 
-        state = self._derive_dimension_state(run.id, dimension)
+        state = self._derive_dimension_state(
+            run.id, dimension, run.organization_id, run.product_market_state_id,
+        )
         assessment = DimensionAssessment(
             assessment_run_id=run.id,
             dimension=dimension,
@@ -656,7 +658,13 @@ class AssessmentRunService:
             f"{entry['op']}({entry['field']})={entry['outcome']}" for entry in trace
         )
 
-    def _derive_dimension_state(self, assessment_run_id: UUID, dimension: str) -> str:
+    def _derive_dimension_state(
+        self,
+        assessment_run_id: UUID,
+        dimension: str,
+        organization_id: UUID,
+        product_market_state_id: UUID,
+    ) -> str:
         # Worst-first precedence, mirroring B5.3's own gate philosophy -
         # not spec-stated explicitly, flagged when this was proposed.
         #
@@ -679,8 +687,19 @@ class AssessmentRunService:
 
         engine_errored = any(s.status == StepRunStatus.FAILED.value for s in steps)
 
-        non_compliant = findings_proposed > 0 or any(
-            r.outcome == "NOT_SATISFIED" for r in results
+        # findings_proposed only sees revisions created during THIS run -
+        # a Finding that's moved past PROPOSED (OPEN, CUSTOMER_RESPONDED)
+        # correctly gets no new revision from propose() on a fresh
+        # rerun, so it would go uncounted without this third,
+        # run-independent check. Additive to, not a replacement for,
+        # the two existing signals - same "OR another signal in" shape
+        # as the hard_gate_effect fix at the gate level. Only helps a
+        # FRESH (non-reused) computation - see CLAUDE.md "Known
+        # limitations" for the reuse gap this does not close.
+        non_compliant = (
+            findings_proposed > 0
+            or any(r.outcome == "NOT_SATISFIED" for r in results)
+            or self.findings.has_open_finding(organization_id, product_market_state_id, dimension)
         )
         if non_compliant:
             return DimensionAssessmentState.NON_COMPLIANT.value

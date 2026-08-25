@@ -20,7 +20,13 @@ from .exceptions import (
     FindingTransitionNotAllowed,
     FindingTransitionNotAuthorized,
 )
-from .models import Finding, FindingRevision, FindingStatus, NON_TERMINAL_FINDING_STATUSES
+from .models import (
+    Finding,
+    FindingRevision,
+    FindingStatus,
+    NON_TERMINAL_FINDING_STATUSES,
+    TERMINAL_FINDING_STATUSES,
+)
 from .repository import FindingRepository, FindingRevisionRepository
 
 # Customer-side "Resolve findings" authority (B2: Organisation admin
@@ -82,6 +88,45 @@ class FindingService:
             raise FindingNotFound()
 
         return finding
+
+    def has_open_finding(
+        self,
+        organization_id: UUID,
+        product_market_state_id: UUID,
+        dimension: str,
+    ) -> bool:
+        """
+        Live, run-independent check: does a currently-open Finding
+        exist for this (product_market_state, dimension), regardless of
+        which AssessmentRun originally proposed it. Exists specifically
+        for AssessmentRunService._derive_dimension_state, whose own
+        findings_proposed signal only sees revisions created during the
+        one run being scored - a Finding that's moved past PROPOSED
+        (OPEN, CUSTOMER_RESPONDED) correctly gets no new revision on a
+        fresh rerun (propose()'s own idempotent-reuse guard), so
+        without this, a still-open Finding could go uncounted. See
+        CLAUDE.md "Assessment engine" and "Known limitations" for what
+        this does and does not close (in particular: nothing here helps
+        a REUSED DimensionAssessment, which never calls
+        _derive_dimension_state at all).
+
+        Deliberately severity-blind, matching findings_proposed's own
+        behavior - any open Finding counts, not just Critical/Major/
+        hard-gated ones. Whether dimension-level state should become
+        severity/hard-gate-aware the way the gate now is is a separate,
+        open question - not decided here.
+        """
+
+        return any(
+            latest.status not in TERMINAL_FINDING_STATUSES
+            for latest in (
+                self.revisions.get_latest(finding.id)
+                for finding in self.findings.get_all_for_dimension(
+                    organization_id, product_market_state_id, dimension,
+                )
+            )
+            if latest is not None
+        )
 
     def get_revisions(self, finding_id: UUID) -> list[FindingRevision]:
         return self.revisions.get_all(finding_id)

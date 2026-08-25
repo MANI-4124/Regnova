@@ -36,6 +36,35 @@ class FindingRepository(BaseRepository[Finding]):
 
         return list(self.db.scalars(statement))
 
+    def get_all_for_dimension(
+        self,
+        organization_id: UUID,
+        product_market_state_id: UUID,
+        dimension: str,
+    ) -> list[Finding]:
+        """
+        Same scoping as get_all, narrowed to one dimension - direct on
+        Finding.dimension, not a join through RequirementVersion.
+        RequirementVersion.dimension would miss any Finding whose
+        requirement_version_id is null (C6's CALCULATION_COMPONENT
+        rules are requirement-version-less), and Finding.dimension is
+        already set directly at propose() time regardless. Used by
+        FindingService.has_open_finding, which AssessmentRunService
+        calls to check for a still-open Finding a fresh run's own rules
+        didn't touch this time - see CLAUDE.md "Assessment engine".
+        """
+        statement = (
+            select(Finding)
+            .where(
+                Finding.organization_id == organization_id,
+                Finding.product_market_state_id == product_market_state_id,
+                Finding.dimension == dimension,
+            )
+            .order_by(Finding.created_at.desc())
+        )
+
+        return list(self.db.scalars(statement))
+
     def get_by_id(
         self,
         organization_id: UUID,

@@ -291,6 +291,101 @@ def test_finding_proposal_on_match_marks_dimension_non_compliant(client, tenant_
     assert "Condition matched" in finding_detail["revisions"][0]["rationale"]
 
 
+def test_fresh_rerun_still_derives_non_compliant_for_an_open_finding(client, tenant_a, regulatory_content_writer):
+    """
+    The staleness gap this fix closes: once a Finding moves past
+    PROPOSED (here, to OPEN via accept()), propose()'s own idempotent-
+    reuse guard correctly stops creating a new revision for it on a
+    fresh rerun of the same claim - the run just proposed nothing new.
+    Before this fix, findings_proposed==0 for that second run and no
+    REQUIREMENT_RESULT rows exist (this rule is FINDING_PROPOSAL-only),
+    so the dimension would derive COMPLIANT despite the Finding still
+    being genuinely open and unresolved. FindingService.has_open_finding
+    is the live, run-independent signal that catches it.
+    """
+
+    _build_claims_rule(
+        client, regulatory_content_writer,
+        condition={"op": "in", "field": "wording", "value": PROHIBITED_WORDINGS},
+        output_type="FINDING_PROPOSAL",
+    )
+
+    product = _create_product(client, tenant_a)
+    version = _create_version(client, tenant_a, product["id"])
+    state = _create_state(client, tenant_a, product["id"], version["id"])
+    claims = [{"claim_id": "clm_1", "wording": "Cures Acne"}]
+
+    first_run = _run_assessment(client, tenant_a, state["id"], claims=claims)
+    first_detail = _get_run_detail(client, tenant_a, state["id"], first_run["id"])
+    assert first_detail["dimension_assessments"][0]["state"] == "NON_COMPLIANT"
+
+    findings = _get_findings(client, tenant_a, state["id"])
+    assert len(findings) == 1
+
+    accept = client.post(
+        f"/findings/{findings[0]['id']}/accept",
+        params={"product_market_state_id": state["id"]},
+        json={"rationale": "Acknowledged, investigating."},
+        headers=tenant_a["headers"],
+    )
+    assert accept.status_code == 200
+    assert accept.json()["revisions"][-1]["status"] == "OPEN"
+
+    # Same claim, same wording - propose() finds the existing OPEN
+    # Finding and correctly declines to touch it (no new revision).
+    second_run = _run_assessment(client, tenant_a, state["id"], claims=claims)
+    second_detail = _get_run_detail(client, tenant_a, state["id"], second_run["id"])
+
+    assert len(second_detail["step_runs"]) == 1  # the rule still ran
+    assert second_detail["dimension_assessments"][0]["state"] == "NON_COMPLIANT"
+
+    second_findings = _get_findings(client, tenant_a, state["id"])
+    assert len(second_findings) == 1  # still no duplicate Finding
+    assert len(client.get(
+        f"/findings/{second_findings[0]['id']}",
+        params={"product_market_state_id": state["id"]},
+        headers=tenant_a["headers"],
+    ).json()["revisions"]) == 2  # PROPOSED, then OPEN - no third from the second run
+
+
+def test_fresh_rerun_shows_compliant_once_finding_resolved(client, tenant_a, regulatory_content_writer):
+    """
+    Control for the test above: once the same Finding reaches a
+    terminal status, a fresh rerun must correctly derive COMPLIANT
+    again - proving has_open_finding tracks CURRENT status, not "was a
+    Finding ever proposed for this dimension at some point."
+    """
+
+    _build_claims_rule(
+        client, regulatory_content_writer,
+        condition={"op": "in", "field": "wording", "value": PROHIBITED_WORDINGS},
+        output_type="FINDING_PROPOSAL",
+        default_severity="MODERATE",  # customer-resolvable without RA/Senior
+    )
+
+    product = _create_product(client, tenant_a)
+    version = _create_version(client, tenant_a, product["id"])
+    state = _create_state(client, tenant_a, product["id"], version["id"])
+    claims = [{"claim_id": "clm_1", "wording": "Cures Acne"}]
+
+    _run_assessment(client, tenant_a, state["id"], claims=claims)
+    findings = _get_findings(client, tenant_a, state["id"])
+    assert len(findings) == 1
+
+    resolve = client.post(
+        f"/findings/{findings[0]['id']}/resolve",
+        params={"product_market_state_id": state["id"]},
+        json={"rationale": "Claim wording corrected in latest artwork."},
+        headers=tenant_a["headers"],
+    )
+    assert resolve.status_code == 200
+    assert resolve.json()["revisions"][-1]["status"] == "RESOLVED"
+
+    second_run = _run_assessment(client, tenant_a, state["id"], claims=claims)
+    second_detail = _get_run_detail(client, tenant_a, state["id"], second_run["id"])
+    assert second_detail["dimension_assessments"][0]["state"] == "COMPLIANT"
+
+
 def test_clean_claim_produces_no_finding_and_compliant_dimension(client, tenant_a, regulatory_content_writer):
     _build_claims_rule(
         client, regulatory_content_writer,
