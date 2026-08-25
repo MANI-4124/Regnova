@@ -444,7 +444,7 @@ def test_dimension_score_avoids_double_counting_and_applies_alone_scores_zero(cl
 def test_compute_gate_critical_finding_forces_g1_regardless_of_progress(db):
     service = MarketReadinessService(db)
     dimension_summary = {"CLAIMS": {"state": "COMPLIANT"}}
-    open_findings = [{"severity": "CRITICAL", "status": "PROPOSED"}]
+    open_findings = [{"severity": "CRITICAL", "status": "PROPOSED", "hard_gate_effect": False}]
 
     gate, reasons = service._compute_gate(dimension_summary, open_findings)
     assert gate == "G1"
@@ -462,7 +462,7 @@ def test_compute_gate_proposed_status_blocks_same_as_open(db):
 
     service = MarketReadinessService(db)
     dimension_summary = {"CLAIMS": {"state": "COMPLIANT"}}
-    open_findings = [{"severity": "CRITICAL", "status": "PROPOSED"}]
+    open_findings = [{"severity": "CRITICAL", "status": "PROPOSED", "hard_gate_effect": False}]
 
     gate, _ = service._compute_gate(dimension_summary, open_findings)
     assert gate == "G1"
@@ -478,7 +478,7 @@ def test_compute_gate_g1_reasons_include_both_critical_finding_and_non_compliant
 
     service = MarketReadinessService(db)
     dimension_summary = {"CLAIMS": {"state": "NON_COMPLIANT"}}
-    open_findings = [{"severity": "CRITICAL", "status": "PROPOSED"}]
+    open_findings = [{"severity": "CRITICAL", "status": "PROPOSED", "hard_gate_effect": False}]
 
     gate, reasons = service._compute_gate(dimension_summary, open_findings)
     assert gate == "G1"
@@ -489,11 +489,62 @@ def test_compute_gate_g1_reasons_include_both_critical_finding_and_non_compliant
 def test_compute_gate_major_finding_forces_g2(db):
     service = MarketReadinessService(db)
     dimension_summary = {"CLAIMS": {"state": "COMPLIANT"}}
-    open_findings = [{"severity": "MAJOR", "status": "OPEN"}]
+    open_findings = [{"severity": "MAJOR", "status": "OPEN", "hard_gate_effect": False}]
 
     gate, reasons = service._compute_gate(dimension_summary, open_findings)
     assert gate == "G2"
     assert "MAJOR_FINDING_OPEN" in reasons
+
+
+def test_compute_gate_open_hard_gate_finding_forces_g1_regardless_of_severity(db):
+    """
+    B5.3's G1 condition names "non-compliant blocking rule" as a third,
+    independent trigger alongside "any open Critical finding" - a
+    Moderate-severity finding on a hard-gate requirement must force G1
+    on its own, not just Critical/Major ones.
+    """
+
+    service = MarketReadinessService(db)
+    dimension_summary = {"CLAIMS": {"state": "COMPLIANT"}}
+    open_findings = [{"severity": "MODERATE", "status": "OPEN", "hard_gate_effect": True}]
+
+    gate, reasons = service._compute_gate(dimension_summary, open_findings)
+    assert gate == "G1"
+    assert "HARD_GATE_FINDING_OPEN" in reasons
+
+
+def test_compute_gate_moderate_finding_without_hard_gate_does_not_force_g1(db):
+    """
+    Additive, not a severity-check replacement: a Moderate-severity
+    finding with hard_gate_effect=False must NOT force G1 on its own -
+    confirms the new check only fires when hard_gate_effect is actually
+    True, not for every open finding regardless of that flag.
+    """
+
+    service = MarketReadinessService(db)
+    dimension_summary = {"CLAIMS": {"state": "COMPLIANT"}}
+    open_findings = [{"severity": "MODERATE", "status": "OPEN", "hard_gate_effect": False}]
+
+    gate, reasons = service._compute_gate(dimension_summary, open_findings)
+    assert gate != "G1"
+    assert "HARD_GATE_FINDING_OPEN" not in reasons
+
+
+def test_compute_gate_critical_without_hard_gate_still_forces_g1(db):
+    """
+    The other half of "additive": the existing severity path stays
+    fully independent of hard_gate_effect - a Critical finding forces
+    G1 on its own even when hard_gate_effect is False.
+    """
+
+    service = MarketReadinessService(db)
+    dimension_summary = {"CLAIMS": {"state": "COMPLIANT"}}
+    open_findings = [{"severity": "CRITICAL", "status": "OPEN", "hard_gate_effect": False}]
+
+    gate, reasons = service._compute_gate(dimension_summary, open_findings)
+    assert gate == "G1"
+    assert "CRITICAL_FINDING_OPEN" in reasons
+    assert "HARD_GATE_FINDING_OPEN" not in reasons
 
 
 def test_compute_gate_human_review_dimension_forces_g3(db):

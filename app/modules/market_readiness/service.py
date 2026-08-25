@@ -313,26 +313,42 @@ class MarketReadinessService:
 
         return round((weighted_sum / weight_total) * 100, 2), False
 
-    def _open_findings(self, organization_id: UUID, product_market_state_id: UUID) -> list[dict[str, str]]:
-        open_findings: list[dict[str, str]] = []
+    def _open_findings(self, organization_id: UUID, product_market_state_id: UUID) -> list[dict[str, Any]]:
+        open_findings: list[dict[str, Any]] = []
 
         for finding in self.findings.get_all(organization_id, product_market_state_id):
             latest = self.finding_revisions.get_latest(finding.id)
             if latest is None or latest.status in _CLOSED_FINDING_STATUSES:
                 continue
-            open_findings.append({"severity": latest.severity, "status": latest.status})
+            open_findings.append({
+                "severity": latest.severity,
+                "status": latest.status,
+                "hard_gate_effect": latest.hard_gate_effect,
+            })
 
         return open_findings
 
     def _compute_gate(
         self,
         dimension_summary: dict[str, dict[str, Any]],
-        open_findings: list[dict[str, str]],
+        open_findings: list[dict[str, Any]],
     ) -> tuple[str, list[str]]:
         """
         B5.3 gate order, resolved:
         - Finding-status blocking: non-dispositioned statuses (anything
           outside _CLOSED_FINDING_STATUSES) block, not just "OPEN".
+        - An open finding with hard_gate_effect=True forces G1
+          regardless of its own severity - B5.3's G1 condition ("any
+          open Critical finding, explicit ineligibility or
+          non-compliant blocking rule") names three independent
+          triggers, and C5/C7 both list hard-gate status and severity
+          as separate fields, never one derived from the other. Additive
+          to, not a replacement for, the severity check below - a
+          Critical finding on a non-hard-gate requirement must still
+          block on its own, and a hard-gate finding at any severity
+          (Moderate/Minor/Informational included) must also block on
+          its own. See CLAUDE.md "Market readiness" for the full
+          reasoning and the adjacent gap this does NOT close.
         - G3 <- HUMAN_REVIEW_REQUIRED dimension state (flagged as
           inferred - G3's literal wording is about AI-only/confidence-
           unmet decisions, which HUMAN_REVIEW_REQUIRED is the closest
@@ -355,13 +371,16 @@ class MarketReadinessService:
             return ProductMarketStateGate.G0.value, reasons
 
         critical_open = any(f["severity"] == RequirementSeverity.CRITICAL.value for f in open_findings)
+        hard_gate_open = any(f["hard_gate_effect"] for f in open_findings)
         non_compliant = any(
             info["state"] == DimensionAssessmentState.NON_COMPLIANT.value
             for info in dimension_summary.values()
         )
-        if critical_open or non_compliant:
+        if critical_open or hard_gate_open or non_compliant:
             if critical_open:
                 reasons.append("CRITICAL_FINDING_OPEN")
+            if hard_gate_open:
+                reasons.append("HARD_GATE_FINDING_OPEN")
             if non_compliant:
                 reasons.append("NON_COMPLIANT_DIMENSION")
             return ProductMarketStateGate.G1.value, reasons
