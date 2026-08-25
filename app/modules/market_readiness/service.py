@@ -10,7 +10,7 @@ from app.core.settings import get_settings
 from app.modules.assessment_run.models import AssessmentRun, AssessmentRunStatus, DimensionAssessmentState
 from app.modules.assessment_run.repository import AssessmentRunRepository, DimensionAssessmentRepository
 from app.modules.assessment_run.service import AssessmentRunService
-from app.modules.finding.models import FindingStatus
+from app.modules.finding.models import TERMINAL_FINDING_STATUSES
 from app.modules.finding.repository import FindingRepository, FindingRevisionRepository
 from app.modules.product_market_state.exceptions import ProductMarketStateNotFound
 from app.modules.product_market_state.models import ProductMarketStateGate
@@ -49,18 +49,15 @@ _SEVERITY_ORDER = [
 ]
 
 # Statuses representing a completed disposition. Everything else -
-# including PROPOSED, the *only* status this codebase's engine ever
-# actually writes today (no RA-review workflow exists to move a Finding
-# to OPEN or beyond) - blocks the gate. Resolved explicitly: gating
-# strictly on status == "OPEN" would make G1 permanently unreachable,
-# which can't be AC-FR-05-02's intent.
-_CLOSED_FINDING_STATUSES = frozenset({
-    FindingStatus.RESOLVED.value,
-    FindingStatus.ACCEPTED_WITH_RATIONALE.value,
-    FindingStatus.NOT_APPLICABLE.value,
-    FindingStatus.REJECTED.value,
-    FindingStatus.SUPERSEDED.value,
-})
+# including PROPOSED, and now (with the review workflow built) genuine
+# OPEN/CUSTOMER_RESPONDED findings too - blocks the gate. Resolved
+# explicitly: gating strictly on status == "OPEN" would make G1
+# permanently unreachable, which can't be AC-FR-05-02's intent.
+# TERMINAL_FINDING_STATUSES is the one definition of this set - see
+# finding/models.py, which also defines its exact complement
+# (NON_TERMINAL_FINDING_STATUSES, used by FindingService's own
+# transition-legality checks) so the two can't drift apart.
+_CLOSED_FINDING_STATUSES = TERMINAL_FINDING_STATUSES
 
 _DISPLAY_CAPS = {
     ProductMarketStateGate.G0.value: 49.0,

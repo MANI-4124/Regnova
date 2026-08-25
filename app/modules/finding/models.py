@@ -47,6 +47,30 @@ class FindingStatus(str, Enum):
     SUPERSEDED = "SUPERSEDED"
 
 
+# The two-way split of the 8 statuses above: a Finding still awaiting a
+# human disposition versus one that's reached one. Defined once here,
+# not duplicated - market_readiness/service.py's own gate-blocking set
+# is exactly this same complement, and FindingService's transition
+# legality checks (only NON_TERMINAL statuses accept a new transition)
+# are exactly this concept from the other side. SUPERSEDED is terminal
+# but currently unreachable by any transition this pass - see
+# CLAUDE.md "Finding review workflow" for why (no C11 change-detection
+# exists yet to trigger it).
+TERMINAL_FINDING_STATUSES = frozenset({
+    FindingStatus.RESOLVED.value,
+    FindingStatus.ACCEPTED_WITH_RATIONALE.value,
+    FindingStatus.NOT_APPLICABLE.value,
+    FindingStatus.REJECTED.value,
+    FindingStatus.SUPERSEDED.value,
+})
+
+NON_TERMINAL_FINDING_STATUSES = frozenset({
+    FindingStatus.PROPOSED.value,
+    FindingStatus.OPEN.value,
+    FindingStatus.CUSTOMER_RESPONDED.value,
+})
+
+
 _JSON = JSON().with_variant(JSONB(), "postgresql")
 
 
@@ -226,6 +250,19 @@ class FindingRevision(
     rationale: Mapped[str] = mapped_column(
         Text,
         nullable=False,
+    )
+
+    # C7's "Human lineage" group ("reviewer... reason, approval and
+    # timestamps") was entirely absent from this model before the
+    # review workflow - this is the one field it actually needed: who
+    # decided this revision. Nullable because propose()'s engine-
+    # written revisions have no human actor. No separate decided_at -
+    # this row's own created_at already stamps that moment, since a
+    # transition always creates a new revision rather than mutating one
+    # (see CLAUDE.md "Finding / Finding Revision").
+    decided_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
     )
 
     # --- Recommendation ---
