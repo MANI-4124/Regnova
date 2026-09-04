@@ -23,6 +23,23 @@ No identity is hardcoded here - every identifying value is a required CLI
 argument. Uses the service layer directly (bypasses HTTP/RBAC entirely),
 same convention as scripts/seed_regulatory_sources.py.
 
+Convention this script deliberately does NOT follow, and why: the CEO seat
+this script bootstraps is tied to a real person's identity on purpose -
+User.is_permanent_admin has no succession path (see CLAUDE.md), so a
+placeholder could never legitimately hold it. For the other four
+InternalRoleCodes (RA, SENIOR_REVIEWER, SUBMISSION_OPERATIONS,
+PLATFORM_ADMIN - REGULATORY_KNOWLEDGE_LEAD is covered by this script's own
+interim dual-hat grant above), the intended convention once they're first
+needed is the OPPOSITE: a role-named placeholder account (e.g.
+regulatory_advisor, senior_reviewer, submission_ops, platform_admin), never
+a real person's identity. When a real hire joins, they get a NEW account
+with the role granted through the normal propose/approve flow, and the
+placeholder is deactivated - never renamed into the real person, since
+that would retroactively attribute the placeholder's prior actions to
+someone who wasn't there. No script creates these placeholder accounts
+yet; recorded here (see also CLAUDE.md's "Internal role model") as the
+decided convention, not a design still open.
+
 Idempotent: safe to re-run. Refuses (does not silently override) if the
 permanent-admin seat or the tenant-zero organization already belongs to a
 different identity than the one you pass in - see the error messages.
