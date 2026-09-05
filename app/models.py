@@ -38,6 +38,7 @@ from app.modules.finding.models import (
     FindingRevision,
     FindingRevisionSourceLocation,
 )
+from app.modules.content_review.models import ContentVersionTransition
 # migrations/env.py
 
 import app.models
@@ -70,4 +71,5 @@ __all__ = [
     "Finding",
     "FindingRevision",
     "FindingRevisionSourceLocation",
+    "ContentVersionTransition",
 ]

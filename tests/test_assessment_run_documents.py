@@ -59,14 +59,30 @@ def _create_requirement_version(client, writer, **overrides):
     return requirement, response.json()
 
 
-def _activate_requirement_version(client, writer, requirement, version):
-    response = client.put(
-        f"/requirements/{requirement['id']}/versions/{version['id']}",
-        json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
+def _submit_verify_activate(client, writer, path):
+    response = client.post(f"{path}/submit-for-review", headers=writer["headers"])
+    assert response.status_code == 200
+
+    response = client.post(
+        f"{path}/verify",
+        json={"rationale": "Verified against primary text."},
+        headers=writer["headers"],
+    )
+    assert response.status_code == 200
+
+    response = client.post(
+        f"{path}/activate",
+        json={"rationale": "Approved for release inclusion."},
         headers=writer["headers"],
     )
     assert response.status_code == 200
     return response.json()
+
+
+def _activate_requirement_version(client, writer, requirement, version):
+    return _submit_verify_activate(
+        client, writer, f"/requirements/{requirement['id']}/versions/{version['id']}",
+    )
 
 
 def _create_rule_version(client, writer, requirement_version_id, **overrides):
@@ -90,13 +106,9 @@ def _create_rule_version(client, writer, requirement_version_id, **overrides):
 
 
 def _activate_rule_version(client, writer, rule, version):
-    response = client.put(
-        f"/rules/{rule['id']}/versions/{version['id']}",
-        json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
-        headers=writer["headers"],
+    return _submit_verify_activate(
+        client, writer, f"/rules/{rule['id']}/versions/{version['id']}",
     )
-    assert response.status_code == 200
-    return response.json()
 
 
 def _create_active_release(client, writer, rule_version_ids, requirement_version_ids):
@@ -112,11 +124,9 @@ def _create_active_release(client, writer, rule_version_ids, requirement_version
         },
         headers=writer["headers"],
     ).json()
-    activated_source = client.put(
-        f"/sources/{source['id']}/versions/{source_version['id']}",
-        json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
-        headers=writer["headers"],
-    ).json()
+    activated_source = _submit_verify_activate(
+        client, writer, f"/sources/{source['id']}/versions/{source_version['id']}",
+    )
 
     response = client.post(
         "/regulatory-basis-releases",
@@ -406,11 +416,10 @@ def test_consistency_and_document_requirements_route_to_correct_subject_pools(cl
         },
         headers=regulatory_content_writer["headers"],
     ).json()
-    activated_source = client.put(
+    activated_source = _submit_verify_activate(
+        client, regulatory_content_writer,
         f"/sources/{source['id']}/versions/{source_version['id']}",
-        json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
-        headers=regulatory_content_writer["headers"],
-    ).json()
+    )
     release_response = client.post(
         "/regulatory-basis-releases",
         json={

@@ -114,43 +114,50 @@ def _create_rule_version(client, writer, **overrides):
     return rule, version_resp.json()
 
 
-def _activate_source_version(client, writer, source, version, verified=True):
-    body = {"status": "ACTIVE"}
-    if verified:
-        body["verified_at"] = "2026-01-01T00:00:00Z"
-    resp = client.put(
-        f"/sources/{source['id']}/versions/{version['id']}",
-        json=body,
+def _submit_verify_activate(client, writer, path):
+    """
+    DRAFT -> IN_REVIEW -> VERIFIED -> ACTIVE via the real workflow
+    endpoints - see tests/test_content_review.py for the workflow's own
+    dedicated tests (authorization, out-of-order transitions, etc.).
+    regulatory_content_writer holds REGULATORY_KNOWLEDGE_LEAD, which
+    satisfies both author and verifier authority, so one actor can run
+    the whole pipeline here exactly as it can in the real app today.
+    """
+    resp = client.post(f"{path}/submit-for-review", headers=writer["headers"])
+    assert resp.status_code == 200
+
+    resp = client.post(
+        f"{path}/verify",
+        json={"rationale": "Verified against primary text."},
+        headers=writer["headers"],
+    )
+    assert resp.status_code == 200
+
+    resp = client.post(
+        f"{path}/activate",
+        json={"rationale": "Approved for release inclusion."},
         headers=writer["headers"],
     )
     assert resp.status_code == 200
     return resp.json()
 
 
-def _activate_requirement_version(client, writer, requirement, version, verified=True):
-    body = {"status": "ACTIVE"}
-    if verified:
-        body["verified_at"] = "2026-01-01T00:00:00Z"
-    resp = client.put(
-        f"/requirements/{requirement['id']}/versions/{version['id']}",
-        json=body,
-        headers=writer["headers"],
+def _activate_source_version(client, writer, source, version):
+    return _submit_verify_activate(
+        client, writer, f"/sources/{source['id']}/versions/{version['id']}",
     )
-    assert resp.status_code == 200
-    return resp.json()
 
 
-def _activate_rule_version(client, writer, rule, version, verified=True):
-    body = {"status": "ACTIVE"}
-    if verified:
-        body["verified_at"] = "2026-01-01T00:00:00Z"
-    resp = client.put(
-        f"/rules/{rule['id']}/versions/{version['id']}",
-        json=body,
-        headers=writer["headers"],
+def _activate_requirement_version(client, writer, requirement, version):
+    return _submit_verify_activate(
+        client, writer, f"/requirements/{requirement['id']}/versions/{version['id']}",
     )
-    assert resp.status_code == 200
-    return resp.json()
+
+
+def _activate_rule_version(client, writer, rule, version):
+    return _submit_verify_activate(
+        client, writer, f"/rules/{rule['id']}/versions/{version['id']}",
+    )
 
 
 def _create_eligible_source_version(client, writer, **overrides):
@@ -265,23 +272,35 @@ def test_create_release_with_draft_version_is_rejected(client, regulatory_conten
     assert response.status_code == 409
 
 
-def test_create_release_with_active_but_unverified_version_is_rejected(client, regulatory_content_writer):
+def test_create_release_with_active_but_unverified_version_is_rejected(client, db, regulatory_content_writer):
     """
-    The specific gap the verified_at check exists to catch: a version
-    PATCHed directly to ACTIVE without ever going through verification
-    (nothing currently enforces that ordering - see CLAUDE.md). status
-    alone being ACTIVE must not be sufficient for inclusion.
+    Belt-and-suspenders check: the workflow endpoints (submit-for-review/
+    verify/activate - see tests/test_content_review.py) now make it
+    impossible to reach ACTIVE without verified_at being set through the
+    API, so this scenario can no longer be constructed the way it used
+    to be (a direct PATCH to status=ACTIVE with verified_at left null).
+    The release service's own verified_at check is independent defense-
+    in-depth, not the only thing that used to guard this - exercised
+    here by writing the illegal state directly at the DB layer, the one
+    way it can still occur (e.g. a bug elsewhere, a future direct-ORM
+    script).
     """
+    import uuid
+
+    from app.modules.source_version.repository import SourceVersionRepository
+
     source, version = _create_source_version(client, regulatory_content_writer)
-    active_unverified = _activate_source_version(
-        client, regulatory_content_writer, source, version, verified=False,
-    )
-    assert active_unverified["status"] == "ACTIVE"
-    assert active_unverified["verified_at"] is None
+
+    versions = SourceVersionRepository(db)
+    row = versions.get_by_id(uuid.UUID(source["id"]), uuid.UUID(version["id"]))
+    row.status = "ACTIVE"
+    row.verified_at = None
+    versions.update(row)
+    db.commit()
 
     response = _create_release(
         client, regulatory_content_writer,
-        source_version_ids=[active_unverified["id"]],
+        source_version_ids=[version["id"]],
     )
     assert response.status_code == 409
 

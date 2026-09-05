@@ -4,6 +4,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.modules.content_review.service import ContentReviewWorkflow
 from app.modules.requirement_version.exceptions import RequirementVersionNotFound
 from app.modules.requirement_version.repository import RequirementVersionRepository
 from app.modules.rule.exceptions import RuleNotFound
@@ -12,17 +13,21 @@ from app.modules.source_location.exceptions import SourceLocationNotFound
 from app.modules.source_location.repository import SourceLocationRepository
 
 from .exceptions import RuleVersionNotFound
-from .models import RuleVersion
+from .models import RuleVersion, RuleVersionStatus
 from .repository import RuleVersionRepository
 from .schemas import (
     RuleVersionCreate,
     RuleVersionUpdate,
 )
 
+CONTENT_TYPE = "rule_version"
+
 
 class RuleVersionService:
     """
-    Rule version service.
+    Rule version service. Draft/verify/activate/reject delegate to
+    ContentReviewWorkflow (shared with RequirementVersion/SourceVersion)
+    - see CLAUDE.md "Regulatory content approval workflow".
     """
 
     def __init__(self, db: Session):
@@ -31,6 +36,9 @@ class RuleVersionService:
         self.rules = RuleRepository(db)
         self.requirement_versions = RequirementVersionRepository(db)
         self.source_locations = SourceLocationRepository(db)
+        self.workflow = ContentReviewWorkflow(
+            db, content_type=CONTENT_TYPE, status_enum=RuleVersionStatus,
+        )
 
     def _get_rule_or_404(self, rule_id: UUID):
         rule = self.rules.get_by_id(rule_id)
@@ -86,6 +94,8 @@ class RuleVersionService:
         self,
         rule_id: UUID,
         payload: RuleVersionCreate,
+        *,
+        author_user_id: UUID,
     ) -> RuleVersion:
         self._get_rule_or_404(rule_id)
         self._validate_requirement_version(payload.requirement_version_id)
@@ -97,6 +107,7 @@ class RuleVersionService:
 
         version = RuleVersion(
             rule_id=rule_id,
+            author_user_id=author_user_id,
             **data,
         )
 
@@ -106,6 +117,7 @@ class RuleVersionService:
             )
 
         self.repository.create(version)
+        self.workflow.draft(version, actor_user_id=author_user_id)
         self.db.commit()
 
         return version
@@ -117,6 +129,7 @@ class RuleVersionService:
         payload: RuleVersionUpdate,
     ) -> RuleVersion:
         version = self.get_by_id(rule_id, version_id)
+        self.workflow.require_editable(version)
 
         if "requirement_version_id" in payload.model_fields_set:
             self._validate_requirement_version(
@@ -136,6 +149,61 @@ class RuleVersionService:
             version.source_locations = self._resolve_source_locations(ids)
 
         self.repository.update(version)
+        self.db.commit()
+
+        return version
+
+    def submit_for_review(
+        self,
+        rule_id: UUID,
+        version_id: UUID,
+        *,
+        actor_user_id: UUID,
+    ) -> RuleVersion:
+        version = self.get_by_id(rule_id, version_id)
+        self.workflow.submit_for_review(version, actor_user_id=actor_user_id)
+        self.db.commit()
+
+        return version
+
+    def verify(
+        self,
+        rule_id: UUID,
+        version_id: UUID,
+        *,
+        actor_user_id: UUID,
+        rationale: str,
+    ) -> RuleVersion:
+        version = self.get_by_id(rule_id, version_id)
+        self.workflow.verify(version, actor_user_id=actor_user_id, rationale=rationale)
+        self.db.commit()
+
+        return version
+
+    def activate(
+        self,
+        rule_id: UUID,
+        version_id: UUID,
+        *,
+        actor_user_id: UUID,
+        rationale: str,
+    ) -> RuleVersion:
+        version = self.get_by_id(rule_id, version_id)
+        self.workflow.activate(version, actor_user_id=actor_user_id, rationale=rationale)
+        self.db.commit()
+
+        return version
+
+    def reject(
+        self,
+        rule_id: UUID,
+        version_id: UUID,
+        *,
+        actor_user_id: UUID,
+        rationale: str,
+    ) -> RuleVersion:
+        version = self.get_by_id(rule_id, version_id)
+        self.workflow.reject(version, actor_user_id=actor_user_id, rationale=rationale)
         self.db.commit()
 
         return version

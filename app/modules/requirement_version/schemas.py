@@ -85,9 +85,6 @@ class RequirementVersionUpdate(BaseModel):
     importance_weight: float | None = None
     approval_policy: str | None = None
 
-    author_user_id: UUID | None = None
-    reviewer_user_id: UUID | None = None
-    verified_at: datetime | None = None
     authority_interpretation_label: str | None = None
 
     effective_from: datetime | None = None
@@ -97,7 +94,11 @@ class RequirementVersionUpdate(BaseModel):
     supersedes_id: UUID | None = None
     superseded_by_id: UUID | None = None
 
-    status: str | None = None
+    # status/author_user_id/reviewer_user_id/verified_at are deliberately
+    # NOT editable here - they're managed exclusively by
+    # ContentReviewWorkflow's submit_for_review()/verify()/activate()/
+    # reject() transition endpoints below, not free-form PATCH fields.
+    # See CLAUDE.md "Regulatory content approval workflow".
 
     source_location_ids: list[UUID] | None = None
 

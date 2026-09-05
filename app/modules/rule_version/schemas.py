@@ -53,9 +53,6 @@ class RuleVersionUpdate(BaseModel):
 
     output_type: str | None = None
 
-    author_user_id: UUID | None = None
-    reviewer_user_id: UUID | None = None
-    verified_at: datetime | None = None
     approval_policy: str | None = None
 
     effective_from: datetime | None = None
@@ -65,7 +62,9 @@ class RuleVersionUpdate(BaseModel):
     supersedes_id: UUID | None = None
     superseded_by_id: UUID | None = None
 
-    status: str | None = None
+    # status/author_user_id/reviewer_user_id/verified_at are deliberately
+    # NOT editable here - see RequirementVersionUpdate's own comment and
+    # CLAUDE.md "Regulatory content approval workflow".
 
     test_fixtures: list[Any] | None = None
     test_fixtures_schema_name: str | None = None

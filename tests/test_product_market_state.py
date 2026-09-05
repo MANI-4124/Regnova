@@ -92,11 +92,22 @@ def _create_active_release(client, writer, jurisdiction="Malaysia", market="Mala
         },
         headers=writer["headers"],
     ).json()
-    activated = client.put(
-        f"/sources/{source['id']}/versions/{source_version['id']}",
-        json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
+    path = f"/sources/{source['id']}/versions/{source_version['id']}"
+    response = client.post(f"{path}/submit-for-review", headers=writer["headers"])
+    assert response.status_code == 200
+    response = client.post(
+        f"{path}/verify",
+        json={"rationale": "Verified against primary text."},
         headers=writer["headers"],
-    ).json()
+    )
+    assert response.status_code == 200
+    response = client.post(
+        f"{path}/activate",
+        json={"rationale": "Approved for release inclusion."},
+        headers=writer["headers"],
+    )
+    assert response.status_code == 200
+    activated = response.json()
 
     release = client.post(
         "/regulatory-basis-releases",

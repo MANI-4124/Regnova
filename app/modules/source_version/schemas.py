@@ -52,16 +52,14 @@ class SourceVersionUpdate(BaseModel):
     effective_from: datetime | None = None
     effective_to: datetime | None = None
     retrieved_at: datetime | None = None
-    verified_at: datetime | None = None
     recorded_at: datetime | None = None
     retired_at: datetime | None = None
-    activated_at: datetime | None = None
     supersedes_id: UUID | None = None
     superseded_by_id: UUID | None = None
 
-    status: str | None = None
-    author_user_id: UUID | None = None
-    reviewer_user_id: UUID | None = None
+    # status/author_user_id/reviewer_user_id/verified_at/activated_at
+    # are deliberately NOT editable here - see RequirementVersionUpdate's
+    # own comment and CLAUDE.md "Regulatory content approval workflow".
 
     license_notes: str | None = None
     usage_restrictions: str | None = None

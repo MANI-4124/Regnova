@@ -51,3 +51,20 @@ class InternalRoleAssignmentRepository(BaseRepository[InternalRoleAssignment]):
         )
 
         return self.db.scalar(statement)
+
+    def get_active_holders(self, role_code: str) -> list[InternalRoleAssignment]:
+        """
+        Every currently-APPROVED assignment for role_code, across all
+        users - "who holds this role right now", as opposed to
+        get_active_for_user_role's "does this one user hold it". Used by
+        the outbox notification consumer to find who to notify on a
+        ContentVersionTransitioned SubmittedForReview event - see
+        app.modules.audit.worker.
+        """
+
+        statement = select(InternalRoleAssignment).where(
+            InternalRoleAssignment.role_code == role_code,
+            InternalRoleAssignment.status == InternalRoleAssignmentStatus.APPROVED.value,
+        )
+
+        return list(self.db.scalars(statement))

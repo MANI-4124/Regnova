@@ -71,6 +71,13 @@ def require_ceo(
     return current_user
 
 
+def _has_active_role(db: Session, user_id, role_code: str) -> bool:
+    return InternalRoleAssignmentRepository(db).get_active_for_user_role(
+        user_id,
+        role_code,
+    ) is not None
+
+
 def _require_internal_role(
     current_user: User,
     db: Session,
@@ -120,14 +127,43 @@ def require_regulatory_content_writer(
     db: Session = Depends(get_db_session),
 ) -> User:
     """
-    Replaces the require_admin placeholder on Source/Requirement/Rule/
-    RegulatoryBasisRelease writes. REGULATORY_KNOWLEDGE_LEAD only -
-    deliberately not RA/Senior Reviewer too, even though FR-13 lists
-    "authorized RA reviewer" as a Graph Console actor: B2's own
-    permission table gives RA/Senior Reviewer authority over
-    assessment-side data (findings, review decisions), not regulatory-
-    content authoring, which FR-13 frames as the Knowledge Lead's
-    specific responsibility. See CLAUDE.md "Internal role model".
+    REGULATORY_KNOWLEDGE_LEAD only - deliberately not RA/Senior Reviewer
+    too, even though FR-13 lists "authorized RA reviewer" as a Graph
+    Console actor: B2's own permission table gives RA/Senior Reviewer
+    authority over assessment-side data (findings, review decisions),
+    not regulatory-content authoring, which FR-13 frames as the
+    Knowledge Lead's specific responsibility. See CLAUDE.md "Internal
+    role model".
+
+    Gates RegulatoryBasisRelease writes (assembling an already-verified
+    release stays Knowledge-Lead-only, not delegable to an advisor), and
+    the verify()/activate()/reject() transitions on Source/Requirement/
+    Rule versions - see require_regulatory_content_author below for
+    drafting those, and CLAUDE.md "Regulatory content approval workflow"
+    for the full split.
     """
+
+    return _require_internal_role(current_user, db, InternalRoleCode.REGULATORY_KNOWLEDGE_LEAD.value)
+
+
+def require_regulatory_content_author(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> User:
+    """
+    Drafting/editing-while-DRAFT/submitting-for-review on Source/
+    Requirement/Rule versions: REGULATORY_CONTENT_ADVISOR or
+    REGULATORY_KNOWLEDGE_LEAD (Knowledge Lead is a strict superset, same
+    shape as require_manager including ADMIN). Does NOT grant verify/
+    activate/reject authority - see require_regulatory_content_writer
+    above and CLAUDE.md "Regulatory content approval workflow". This
+    router-level check is a floor; ContentReviewWorkflow re-checks the
+    precise authority each transition needs in the service layer, the
+    same defense-in-depth precedent finding/service.py already
+    establishes.
+    """
+
+    if _has_active_role(db, current_user.id, InternalRoleCode.REGULATORY_CONTENT_ADVISOR.value):
+        return current_user
 
     return _require_internal_role(current_user, db, InternalRoleCode.REGULATORY_KNOWLEDGE_LEAD.value)

@@ -32,6 +32,16 @@ class InternalRoleCode(str, Enum):
     SUBMISSION_OPERATIONS = "SUBMISSION_OPERATIONS"
     PLATFORM_ADMIN = "PLATFORM_ADMIN"
     REGULATORY_KNOWLEDGE_LEAD = "REGULATORY_KNOWLEDGE_LEAD"
+    # Drafts Source/Requirement/Rule content (visible but inert) but
+    # cannot verify or activate it - that stays REGULATORY_KNOWLEDGE_LEAD
+    # only. Deliberately NOT `RA`, despite the superficial name overlap:
+    # RA's authority is assessment-side (Finding review), never content
+    # authoring - see require_regulatory_content_writer's own docstring.
+    # A new code, not a scope on PLATFORM_ADMIN or REGULATORY_KNOWLEDGE_LEAD,
+    # for the same reason REGULATORY_KNOWLEDGE_LEAD itself got its own
+    # code rather than riding on PLATFORM_ADMIN's scope list. See
+    # CLAUDE.md "Regulatory content approval workflow".
+    REGULATORY_CONTENT_ADVISOR = "REGULATORY_CONTENT_ADVISOR"
 
 
 class InternalRoleAssignmentStatus(str, Enum):

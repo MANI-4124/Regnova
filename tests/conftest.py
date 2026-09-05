@@ -160,13 +160,25 @@ def make_internal_user(db: Session, role_code: str | None, label: str) -> dict:
         db.add(organization)
         db.flush()
 
-    role = Role(
-        organization_id=organization.id,
-        code="EMPLOYEE",
-        name=f"Internal {label}",
+    # Reused across calls, not recreated per call - a test requesting two
+    # internal-role fixtures at once (e.g. regulatory_content_advisor AND
+    # regulatory_content_writer) would otherwise insert a second EMPLOYEE
+    # role into the same tenant-zero org and violate its own (organization_id,
+    # code) uniqueness, the same reuse-or-create shape as the organization
+    # lookup just above.
+    role = (
+        db.query(Role)
+        .filter(Role.organization_id == organization.id, Role.code == "EMPLOYEE")
+        .first()
     )
-    db.add(role)
-    db.flush()
+    if role is None:
+        role = Role(
+            organization_id=organization.id,
+            code="EMPLOYEE",
+            name="Internal",
+        )
+        db.add(role)
+        db.flush()
 
     user = User(
         organization_id=organization.id,
@@ -228,4 +240,18 @@ def regulatory_content_writer(db: Session) -> dict:
     """
     return make_internal_user(
         db, InternalRoleCode.REGULATORY_KNOWLEDGE_LEAD.value, "KnowledgeLead",
+    )
+
+
+@pytest.fixture()
+def regulatory_content_advisor(db: Session) -> dict:
+    """
+    A RegNova-internal user holding an APPROVED REGULATORY_CONTENT_ADVISOR
+    InternalRoleAssignment - satisfies require_regulatory_content_author
+    but NOT require_regulatory_content_writer: can draft/edit/submit-for-
+    review, cannot verify/activate/reject. See CLAUDE.md "Regulatory
+    content approval workflow".
+    """
+    return make_internal_user(
+        db, InternalRoleCode.REGULATORY_CONTENT_ADVISOR.value, "ContentAdvisor",
     )

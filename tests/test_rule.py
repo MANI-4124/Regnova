@@ -175,16 +175,21 @@ def test_create_and_get_rule_version(client, tenant_a, regulatory_content_writer
 
 
 def test_update_rule_version(client, regulatory_content_writer):
+    """
+    status is no longer settable through this generic PUT - it's
+    managed exclusively by the submit-for-review/verify/activate/reject
+    transition endpoints (see tests/test_content_review.py).
+    """
     rule = _create_rule(client, regulatory_content_writer)
     version = _create_rule_version(client, regulatory_content_writer, rule["id"])
 
     response = client.put(
         f"/rules/{rule['id']}/versions/{version['id']}",
-        json={"status": "IN_REVIEW", "notes": "under review"},
+        json={"notes": "under review"},
         headers=regulatory_content_writer["headers"],
     )
     assert response.status_code == 200
-    assert response.json()["status"] == "IN_REVIEW"
+    assert response.json()["status"] == "DRAFT"
     assert response.json()["notes"] == "under review"
 
 

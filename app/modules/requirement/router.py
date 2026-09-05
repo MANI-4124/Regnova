@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.dependencies import get_db_session
 from app.modules.rbac.dependencies import (
     require_employee,
-    require_regulatory_content_writer,
+    require_regulatory_content_author,
 )
 from app.modules.user.models import User
 
@@ -58,7 +58,7 @@ def get_requirement(
 )
 def create_requirement(
     payload: RequirementCreate,
-    current_user: User = Depends(require_regulatory_content_writer),
+    current_user: User = Depends(require_regulatory_content_author),
     service: RequirementService = Depends(get_requirement_service),
 ):
     return service.create(payload)
@@ -71,7 +71,7 @@ def create_requirement(
 def update_requirement(
     requirement_id: UUID,
     payload: RequirementUpdate,
-    current_user: User = Depends(require_regulatory_content_writer),
+    current_user: User = Depends(require_regulatory_content_author),
     service: RequirementService = Depends(get_requirement_service),
 ):
     return service.update(requirement_id, payload)

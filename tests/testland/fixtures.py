@@ -82,14 +82,37 @@ def create_requirement_version(client, writer, *, market, category, **overrides)
     return requirement, response.json()
 
 
-def activate_requirement_version(client, writer, requirement, version):
-    response = client.put(
-        f"/requirements/{requirement['id']}/versions/{version['id']}",
-        json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
+def _submit_verify_activate(client, writer, path):
+    """
+    DRAFT -> IN_REVIEW -> VERIFIED -> ACTIVE via the real approval
+    workflow endpoints (see CLAUDE.md "Regulatory content approval
+    workflow") - the corpus's `writer` holds REGULATORY_KNOWLEDGE_LEAD,
+    which satisfies both author and verifier authority, so one actor
+    runs the whole pipeline here exactly as it can in the real app.
+    """
+    response = client.post(f"{path}/submit-for-review", headers=writer["headers"])
+    assert response.status_code == 200, response.text
+
+    response = client.post(
+        f"{path}/verify",
+        json={"rationale": SYNTHETIC_NOTE},
+        headers=writer["headers"],
+    )
+    assert response.status_code == 200, response.text
+
+    response = client.post(
+        f"{path}/activate",
+        json={"rationale": SYNTHETIC_NOTE},
         headers=writer["headers"],
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def activate_requirement_version(client, writer, requirement, version):
+    return _submit_verify_activate(
+        client, writer, f"/requirements/{requirement['id']}/versions/{version['id']}",
+    )
 
 
 def create_rule_version(client, writer, requirement_version_id, **overrides):
@@ -111,13 +134,9 @@ def create_rule_version(client, writer, requirement_version_id, **overrides):
 
 
 def activate_rule_version(client, writer, rule, version):
-    response = client.put(
-        f"/rules/{rule['id']}/versions/{version['id']}",
-        json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
-        headers=writer["headers"],
+    return _submit_verify_activate(
+        client, writer, f"/rules/{rule['id']}/versions/{version['id']}",
     )
-    assert response.status_code == 200, response.text
-    return response.json()
 
 
 def build_requirement_and_rule(client, writer, *, market, category, requirement_overrides, rule_overrides):
@@ -149,11 +168,9 @@ def create_active_release(client, writer, *, market, rule_version_ids, requireme
         },
         headers=writer["headers"],
     ).json()
-    activated_source = client.put(
-        f"/sources/{source['id']}/versions/{source_version['id']}",
-        json={"status": "ACTIVE", "verified_at": "2026-01-01T00:00:00Z"},
-        headers=writer["headers"],
-    ).json()
+    activated_source = _submit_verify_activate(
+        client, writer, f"/sources/{source['id']}/versions/{source_version['id']}",
+    )
 
     response = client.post(
         "/regulatory-basis-releases",
