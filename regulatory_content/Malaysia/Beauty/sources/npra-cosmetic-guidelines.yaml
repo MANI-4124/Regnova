@@ -1,0 +1,14 @@
+# EXAMPLE / STARTER TEMPLATE - real, loadable, but named "example-" on
+# purpose: delete or rename this before adding real sources here. See
+# regulatory_content/README.md for the full field reference. `key` is
+# this Source's stable identity across reloads (becomes
+# Source.human_reference) - pick it once, keep it even if you rename
+# this file later.
+
+key: example-npra-cosmetic-guidelines
+title: "Guidelines for Control of Cosmetic Products in Malaysia (Second Edition)"
+issuing_authority: "National Pharmaceutical Regulatory Agency (NPRA), Ministry of Health Malaysia"
+jurisdiction: Malaysia
+tier: 1
+source_type: OFFICIAL_GUIDELINE
+official_url: "https://www.npra.gov.my/images/Guidelines_Central/Guidelines_on_Cosmetic/GUIDELINES_FOR_CONTROL_OF_COSMETIC_PRODUCTS_IN_MALAYSIA.pdf"

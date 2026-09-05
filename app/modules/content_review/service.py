@@ -12,7 +12,11 @@ from app.modules.organization.repository import OrganizationRepository
 from app.modules.user.exceptions import UserNotFound
 from app.modules.user.repository import UserRepository
 
-from .exceptions import ContentVersionTransitionNotAllowed, ContentVersionTransitionNotAuthorized
+from .exceptions import (
+    ContentVersionTransitionNotAllowed,
+    ContentVersionTransitionNotAuthorized,
+    UnknownContentType,
+)
 from .repository import ContentVersionTransitionRepository
 
 # One event type, content_type carried in the payload, rather than 15
@@ -291,3 +295,107 @@ class ContentReviewWorkflow:
             actor_user_id=actor_user_id,
             rationale=rationale,
         )
+
+
+def _content_type_registry() -> dict[str, tuple[type, type]]:
+    """
+    content_type -> (repository class, status enum) - the same pair each
+    *VersionService's own __init__ already builds a ContentReviewWorkflow
+    from, just keyed by string so BulkContentReviewService can resolve an
+    arbitrary mix of the three content types in one request without
+    three near-identical bulk endpoints.
+
+    Built lazily inside a function, not as a module-level constant -
+    RequirementVersionService/RuleVersionService/SourceVersionService
+    all import ContentReviewWorkflow from this same module at import
+    time, so importing their repositories/status enums back at THIS
+    module's top level would be a real circular import (each module's
+    own __init__.py eagerly imports its router -> service -> this
+    module, before this module has finished defining itself). Deferring
+    the import to call time, long after every module has finished
+    loading, sidesteps that entirely.
+    """
+
+    from app.modules.requirement_version.models import RequirementVersionStatus
+    from app.modules.requirement_version.repository import RequirementVersionRepository
+    from app.modules.rule_version.models import RuleVersionStatus
+    from app.modules.rule_version.repository import RuleVersionRepository
+    from app.modules.source_version.models import SourceVersionStatus
+    from app.modules.source_version.repository import SourceVersionRepository
+
+    return {
+        "requirement_version": (RequirementVersionRepository, RequirementVersionStatus),
+        "rule_version": (RuleVersionRepository, RuleVersionStatus),
+        "source_version": (SourceVersionRepository, SourceVersionStatus),
+    }
+
+
+_PAST_TENSE = {"verify": "verified", "activate": "activated"}
+
+
+class BulkContentReviewService:
+    """
+    Bulk-verify/bulk-activate - the practical-at-volume counterpart to
+    the one-at-a-time verify()/activate() endpoints, for when a file-
+    based load produces hundreds of DRAFT/IN_REVIEW rows at once (see
+    CLAUDE.md "File-based regulatory content pipeline"). Does NOT
+    bypass per-row authority or status checks - each item still goes
+    through the exact same ContentReviewWorkflow.verify()/.activate()
+    real single-row authority+status guards a lone verify() call would.
+    One bad item fails that item alone and never blocks the rest of the
+    batch - same "commit per success, continue on failure" discipline
+    app.modules.audit.worker.dispatch_pending_events already uses for
+    exactly this reason.
+    """
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def _resolve(self, content_type: str, content_id: UUID):
+        entry = _content_type_registry().get(content_type)
+        if entry is None:
+            raise UnknownContentType(content_type, content_id)
+
+        repository_cls, status_enum = entry
+        version = repository_cls(self.db).get_by_id_only(content_id)
+        if version is None:
+            raise UnknownContentType(content_type, content_id)
+
+        workflow = ContentReviewWorkflow(self.db, content_type=content_type, status_enum=status_enum)
+        return version, workflow
+
+    def _apply(self, items, *, action: str, actor_user_id: UUID, rationale: str):
+        from .schemas import BulkContentReviewItemResult
+
+        results = []
+
+        for item in items:
+            try:
+                version, workflow = self._resolve(item.content_type, item.content_id)
+                getattr(workflow, action)(version, actor_user_id=actor_user_id, rationale=rationale)
+                self.db.commit()
+                results.append(
+                    BulkContentReviewItemResult(
+                        content_type=item.content_type,
+                        content_id=item.content_id,
+                        status=_PAST_TENSE[action],
+                    ),
+                )
+            except Exception as exc:
+                self.db.rollback()
+                results.append(
+                    BulkContentReviewItemResult(
+                        content_type=item.content_type,
+                        content_id=item.content_id,
+                        status="failed",
+                        error=str(exc),
+                    ),
+                )
+
+        return results
+
+    def bulk_verify(self, items, *, actor_user_id: UUID, rationale: str):
+        return self._apply(items, action="verify", actor_user_id=actor_user_id, rationale=rationale)
+
+    def bulk_activate(self, items, *, actor_user_id: UUID, rationale: str):
+        return self._apply(items, action="activate", actor_user_id=actor_user_id, rationale=rationale)

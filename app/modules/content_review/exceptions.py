@@ -21,6 +21,23 @@ class ContentVersionTransitionNotAllowed(ConflictException):
         )
 
 
+class UnknownContentType(ConflictException):
+    """
+    A bulk-verify/bulk-activate item named a content_type that isn't in
+    the registry, or a content_id that doesn't resolve to any row of
+    that type. Deliberately a 409-family "can't act on this item", not
+    a 404 for the whole request - a bulk call's other items may still
+    be perfectly valid.
+    """
+
+    error_code = "UNKNOWN_CONTENT_TYPE_OR_ID"
+
+    def __init__(self, content_type: str, content_id):
+        super().__init__(
+            f"No {content_type!r} content version found for id {content_id}.",
+        )
+
+
 class ContentVersionTransitionNotAuthorized(AuthorizationException):
     """
     The actor lacks the role this specific transition requires -

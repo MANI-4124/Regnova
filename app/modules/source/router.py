@@ -10,7 +10,7 @@ from app.modules.rbac.dependencies import (
 )
 from app.modules.user.models import User
 
-from .schemas import SourceResponse
+from .schemas import SourceCreate, SourceResponse, SourceUpdate
 from .service import SourceService
 
 router = APIRouter(
@@ -53,7 +53,21 @@ def get_source(
     response_model=SourceResponse,
 )
 def create_source(
+    payload: SourceCreate = SourceCreate(),
     current_user: User = Depends(require_regulatory_content_author),
     service: SourceService = Depends(get_source_service),
 ):
-    return service.create()
+    return service.create(payload)
+
+
+@router.put(
+    "/{source_id}",
+    response_model=SourceResponse,
+)
+def update_source(
+    source_id: UUID,
+    payload: SourceUpdate,
+    current_user: User = Depends(require_regulatory_content_author),
+    service: SourceService = Depends(get_source_service),
+):
+    return service.update(source_id, payload)

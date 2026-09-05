@@ -393,3 +393,111 @@ def test_draft_creation_does_not_notify_anyone(client, db, regulatory_content_ad
         regulatory_content_writer["user"].id,
     )
     assert notifications == []
+
+
+# --- bulk verify / bulk activate ------------------------------------------
+
+
+def _draft_and_submit(client, writer, **overrides):
+    requirement, version = _create_requirement_version(client, writer, **overrides)
+    path = f"/requirements/{requirement['id']}/versions/{version['id']}"
+    response = client.post(f"{path}/submit-for-review", headers=writer["headers"])
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_bulk_verify_and_activate_happy_path(client, regulatory_content_writer):
+    versions = [
+        _draft_and_submit(client, regulatory_content_writer, obligation_type=f"OBLIGATION_{i}")
+        for i in range(3)
+    ]
+
+    verify_response = client.post(
+        "/content-review/bulk-verify",
+        json={
+            "items": [{"content_type": "requirement_version", "content_id": v["id"]} for v in versions],
+            "rationale": "Bulk-verified against primary source text, commit abc1234.",
+        },
+        headers=regulatory_content_writer["headers"],
+    )
+    assert verify_response.status_code == 200, verify_response.text
+    results = verify_response.json()["results"]
+    assert [r["status"] for r in results] == ["verified", "verified", "verified"]
+
+    activate_response = client.post(
+        "/content-review/bulk-activate",
+        json={
+            "items": [{"content_type": "requirement_version", "content_id": v["id"]} for v in versions],
+            "rationale": "Bulk-activated following review, commit abc1234.",
+        },
+        headers=regulatory_content_writer["headers"],
+    )
+    assert activate_response.status_code == 200, activate_response.text
+    results = activate_response.json()["results"]
+    assert [r["status"] for r in results] == ["activated", "activated", "activated"]
+
+
+def test_bulk_verify_one_bad_item_does_not_block_the_others(client, regulatory_content_writer):
+    """
+    One item still sitting at DRAFT (never submitted) fails its own
+    status check without the whole batch aborting - the point of doing
+    this per item through the real ContentReviewWorkflow rather than a
+    single bulk UPDATE statement.
+    """
+    good = _draft_and_submit(client, regulatory_content_writer, obligation_type="GOOD_ONE")
+    requirement, bad = _create_requirement_version(client, regulatory_content_writer, obligation_type="STILL_DRAFT")
+
+    response = client.post(
+        "/content-review/bulk-verify",
+        json={
+            "items": [
+                {"content_type": "requirement_version", "content_id": good["id"]},
+                {"content_type": "requirement_version", "content_id": bad["id"]},
+            ],
+            "rationale": "Bulk-verify with one deliberately unready item.",
+        },
+        headers=regulatory_content_writer["headers"],
+    )
+    assert response.status_code == 200, response.text
+    results = response.json()["results"]
+
+    assert results[0]["status"] == "verified"
+    assert results[1]["status"] == "failed"
+    assert results[1]["error"]
+
+    # The good item's success wasn't rolled back by the bad item's failure.
+    check = client.get(
+        f"/requirements/{good['requirement_id']}/versions/{good['id']}",
+        headers=regulatory_content_writer["headers"],
+    )
+    assert check.status_code == 200
+    assert check.json()["status"] == "VERIFIED"
+
+
+def test_bulk_verify_unknown_content_reports_failed_not_500(client, regulatory_content_writer):
+    import uuid
+
+    response = client.post(
+        "/content-review/bulk-verify",
+        json={
+            "items": [{"content_type": "requirement_version", "content_id": str(uuid.uuid4())}],
+            "rationale": "Verifying something that does not exist.",
+        },
+        headers=regulatory_content_writer["headers"],
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["results"][0]["status"] == "failed"
+
+
+def test_bulk_verify_requires_knowledge_lead_not_advisor(client, regulatory_content_advisor):
+    import uuid
+
+    response = client.post(
+        "/content-review/bulk-verify",
+        json={
+            "items": [{"content_type": "requirement_version", "content_id": str(uuid.uuid4())}],
+            "rationale": "irrelevant",
+        },
+        headers=regulatory_content_advisor["headers"],
+    )
+    assert response.status_code == 403
