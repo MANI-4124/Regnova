@@ -355,39 +355,41 @@ def test_workflow_shared_by_rule_version_and_source_version(client, regulatory_c
 
 
 def test_submitted_for_review_notifies_active_knowledge_leads(
-    client, db, caplog, regulatory_content_advisor, regulatory_content_writer,
+    client, db, regulatory_content_advisor, regulatory_content_writer,
 ):
     """
-    Minimal notification consumer: dispatching a SubmittedForReview
-    ContentVersionTransitioned event logs one line naming the active
-    REGULATORY_KNOWLEDGE_LEAD holder(s) - here, regulatory_content_writer.
+    Integration with the shared notification mechanism (see
+    tests/test_notification.py for that mechanism's own contract):
+    dispatching a SubmittedForReview ContentVersionTransitioned event
+    creates a real Notification row for the active
+    REGULATORY_KNOWLEDGE_LEAD holder - here, regulatory_content_writer.
     """
+    from app.modules.notification.repository import NotificationRepository
+
     requirement, version = _create_requirement_version(client, regulatory_content_advisor)
     path = f"/requirements/{requirement['id']}/versions/{version['id']}"
     client.post(f"{path}/submit-for-review", headers=regulatory_content_advisor["headers"])
 
-    with caplog.at_level("INFO"):
-        dispatched = dispatch_pending_events(db)
-
+    dispatched = dispatch_pending_events(db)
     assert dispatched >= 1
-    notifications = [
-        r for r in caplog.records
-        if r.msg == "content_version_submitted_for_review_notification"
-    ]
+
+    notifications = NotificationRepository(db).get_all_for_recipient(
+        regulatory_content_writer["user"].id,
+    )
     assert len(notifications) == 1
-    assert notifications[0].recipient_user_id == str(regulatory_content_writer["user"].id)
-    assert notifications[0].content_version_id == version["id"]
+    assert notifications[0].type == "ContentVersionTransitioned"
+    assert notifications[0].payload["content_version_id"] == version["id"]
+    assert notifications[0].payload["to_status"] == "IN_REVIEW"
 
 
-def test_draft_creation_does_not_notify_anyone(client, db, caplog, regulatory_content_advisor):
+def test_draft_creation_does_not_notify_anyone(client, db, regulatory_content_advisor, regulatory_content_writer):
     """Drafting is 'visible but inert' - only submission-for-review needs a reviewer notified."""
+    from app.modules.notification.repository import NotificationRepository
+
     _create_requirement_version(client, regulatory_content_advisor)
+    dispatch_pending_events(db)
 
-    with caplog.at_level("INFO"):
-        dispatch_pending_events(db)
-
-    notifications = [
-        r for r in caplog.records
-        if r.msg == "content_version_submitted_for_review_notification"
-    ]
+    notifications = NotificationRepository(db).get_all_for_recipient(
+        regulatory_content_writer["user"].id,
+    )
     assert notifications == []

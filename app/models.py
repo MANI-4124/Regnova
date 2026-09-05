@@ -39,6 +39,7 @@ from app.modules.finding.models import (
     FindingRevisionSourceLocation,
 )
 from app.modules.content_review.models import ContentVersionTransition
+from app.modules.notification.models import Notification
 # migrations/env.py
 
 import app.models
@@ -72,4 +73,5 @@ __all__ = [
     "FindingRevision",
     "FindingRevisionSourceLocation",
     "ContentVersionTransition",
+    "Notification",
 ]

@@ -4,15 +4,11 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from app.modules.internal_role_assignment.models import InternalRoleCode
-from app.modules.internal_role_assignment.repository import InternalRoleAssignmentRepository
-from app.modules.user.repository import UserRepository
+from app.modules.notification.service import NotificationService
 
 from .repository import OutboxRepository
 
 logger = logging.getLogger(__name__)
-
-_CONTENT_VERSION_TRANSITIONED = "ContentVersionTransitioned"
 
 
 def dispatch_pending_events(db: Session, limit: int = 100) -> int:
@@ -49,6 +45,18 @@ def dispatch_pending_events(db: Session, limit: int = 100) -> int:
 
 
 def _publish(db: Session, event) -> None:
+    """
+    V1's own dispatch transport is just this log line (see
+    dispatch_pending_events' docstring) - independent of whether any
+    real notification gets produced below. Turning an event into
+    Notification rows is a separate, generic step: NotificationService.
+    record_for_event() looks up a recipient resolver for event.event_type
+    (see app.modules.notification.service.RESOLVERS) and creates zero or
+    more rows - there is no per-event-type branching in this function
+    itself, that lives entirely in the resolver registry. See CLAUDE.md
+    "Notifications".
+    """
+
     logger.info(
         "outbox_event_dispatched",
         extra={
@@ -59,41 +67,15 @@ def _publish(db: Session, event) -> None:
         },
     )
 
-    if event.event_type == _CONTENT_VERSION_TRANSITIONED:
-        _notify_on_submitted_for_review(db, event)
+    notifications = NotificationService(db).record_for_event(event)
 
-
-def _notify_on_submitted_for_review(db: Session, event) -> None:
-    """
-    Minimal notification consumer - the smallest thing that works, not
-    the full spec'd M5 notification system (no email/Slack/in-app
-    delivery channel exists yet to send to). Logs one line per active
-    REGULATORY_KNOWLEDGE_LEAD holder naming them and the content
-    awaiting their review, only when this transition is the one that
-    actually needs a reviewer's attention (DRAFT -> IN_REVIEW) - an
-    advisor drafting silently, or a Knowledge Lead's own verify/
-    activate/reject, doesn't need to notify anyone. See CLAUDE.md
-    "Regulatory content approval workflow".
-    """
-
-    payload = event.payload or {}
-    if payload.get("to_status") != "IN_REVIEW":
-        return
-
-    holders = InternalRoleAssignmentRepository(db).get_active_holders(
-        InternalRoleCode.REGULATORY_KNOWLEDGE_LEAD.value,
-    )
-    users = UserRepository(db)
-
-    for holder in holders:
-        recipient = users.get_by_id_only(holder.user_id)
+    for notification in notifications:
         logger.info(
-            "content_version_submitted_for_review_notification",
+            "notification_created",
             extra={
                 "event_id": str(event.id),
-                "recipient_user_id": str(holder.user_id),
-                "recipient_email": recipient.email if recipient else None,
-                "content_type": payload.get("content_type"),
-                "content_version_id": payload.get("content_version_id"),
+                "notification_id": str(notification.id),
+                "recipient_user_id": str(notification.recipient_user_id),
+                "type": notification.type,
             },
         )

@@ -27,6 +27,7 @@ from app.modules.finding.router import router as finding_router
 from app.modules.state_snapshot.router import router as state_snapshot_router
 from app.modules.market_readiness.router import router as market_readiness_router
 from app.modules.internal_role_assignment.router import router as internal_role_assignment_router
+from app.modules.notification.router import router as notification_router
 
 
 @asynccontextmanager
@@ -79,6 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(state_snapshot_router)
     app.include_router(market_readiness_router)
     app.include_router(internal_role_assignment_router)
+    app.include_router(notification_router)
     register_exception_handlers(app)
 
     @app.get("/")
