@@ -161,12 +161,36 @@ def main() -> None:
 
         # One demo product per category, browsable through the real
         # API - not the full golden-case matrix (that lives in
-        # tests/test_testland_corpus.py); just enough to prove the
-        # release actually resolves end to end.
+        # tests/test_testland_corpus.py). Each is immediately assessed
+        # with a DELIBERATELY different outcome (same input_facts shapes
+        # tests/test_testland_corpus.py asserts on, via the shared
+        # builders in tests/testland/fixtures.py) so a baseline
+        # dashboard pointed at this seeded data has three visibly
+        # different states to show, not three identical "not yet
+        # assessed" cells - see CLAUDE.md "TESTLAND corpus".
         _, _, beauty_state = tl.new_golden_product(client, tenant, "TESTLAND Demo - Beauty", tl.MARKET_BEAUTY)
+        beauty_snapshot = tl.run_market_readiness(
+            client, tenant, beauty_state["id"],
+            tl.beauty_facts(wording="Softens and smooths skin"),  # clean pass
+        )
+
         _, _, nutra_state = tl.new_golden_product(client, tenant, "TESTLAND Demo - Nutraceuticals", tl.MARKET_NUTRA)
+        nutra_snapshot = tl.run_market_readiness(
+            client, tenant, nutra_state["id"],
+            tl.nutra_facts(dosage_mg=2500, wording="Supports normal energy metabolism"),  # critical-fail
+        )
+
         _, _, meddevice_state = tl.new_golden_product(
             client, tenant, "TESTLAND Demo - Medical Devices", tl.MARKET_MEDDEVICE,
+        )
+        meddevice_snapshot = tl.run_market_readiness(
+            client, tenant, meddevice_state["id"],
+            tl.meddevice_facts(  # human-review (low-confidence classification)
+                risk_class="III", confidence=0.3,
+                documents=[{"document_type": "clinical_evidence_report", "status": "uploaded"}],
+                bench_test_report_ref="BTR-1", notified_body_signoff_ref="NB-1",
+                self_declaration_ref="SD-1",
+            ),
         )
 
     for label, corpus in (("Beauty", beauty), ("Nutraceuticals", nutra), ("Medical Devices", meddevice)):
@@ -175,8 +199,15 @@ def main() -> None:
               f"{len(corpus['rule_versions'])} rules")
 
     print(f"demo organization: {tenant['organization'].id} ({DEMO_ORG_NAME!r})")
-    for label, state in (("Beauty", beauty_state), ("Nutraceuticals", nutra_state), ("Medical Devices", meddevice_state)):
-        print(f"{label} demo product_market_state: {state['id']} (no run submitted - use the API to assess it)")
+    for label, state, snapshot in (
+        ("Beauty", beauty_state, beauty_snapshot),
+        ("Nutraceuticals", nutra_state, nutra_snapshot),
+        ("Medical Devices", meddevice_state, meddevice_snapshot),
+    ):
+        print(
+            f"{label} demo product_market_state: {state['id']} "
+            f"- gate={snapshot['overall_gate']} reasons={snapshot['readiness_reason_codes']}",
+        )
 
 
 if __name__ == "__main__":

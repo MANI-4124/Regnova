@@ -220,6 +220,17 @@ python scripts/bootstrap_interim_operator.py --email you@example.com --password 
 python scripts/seed_testland_corpus.py --email you@example.com
 ```
 
+The seed script doesn't just create content - it immediately assesses each
+of the three demo products with a **deliberately different outcome** (same
+`beauty_facts`/`nutra_facts`/`meddevice_facts` shapes
+`tests/test_testland_corpus.py` asserts on): Beauty comes back a clean pass,
+Nutraceuticals a critical-fail (dosage over the hard ceiling), Medical
+Devices a human-review case (low-confidence Class III classification). This
+is specifically so a tool consuming the real API - the baseline dashboard
+(`../../baseline-dashboard/`, a sibling of this repo, not committed here) -
+has three visibly distinct states to render, not three identical
+"not yet assessed" cells.
+
 To remove everything the seed script created (regulatory content + the one
 demo organization and its products), in one command:
 

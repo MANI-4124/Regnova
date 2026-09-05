@@ -807,3 +807,103 @@ def build_meddevice_content(client, writer):
     )
 
     return {"release": release, "requirement_versions": requirement_versions, "rule_versions": rule_versions}
+
+
+# --- Golden-case input_facts builders ----------------------------------------
+#
+# Shared between tests/test_testland_corpus.py (which asserts the exact
+# outcome each shape produces) and scripts/seed_testland_corpus.py
+# (which uses them to seed real, distinctly-stated demo runs for the
+# baseline dashboard - see CLAUDE.md "TESTLAND corpus"). Single source
+# of truth rather than duplicating the facts shapes in both places.
+
+
+def beauty_filler_facts():
+    """The five canonical dimensions Beauty has no distinctive content
+    for - see build_filler_requirement. Every golden case needs these
+    satisfied or the run caps at G0 regardless of CLAIMS/LABEL/
+    INGREDIENTS."""
+
+    return {
+        "CLASSIFICATION_ELIGIBILITY": {"product": {}, "category_confirmed_ref": "CAT-1"},
+        "DOCUMENTS": {"product": {},
+                      "documents": [{"document_type": "product_safety_report", "status": "uploaded"}],
+                      "consistency_checks": []},
+        "TESTING": {"product": {}, "stability_test_ref": "STAB-1"},
+        "REPRESENTATION": {"product": {}, "artwork_approved_ref": "ART-1"},
+        "REGISTRATION_READINESS": {"product": {}, "responsible_person_ref": "RP-1"},
+    }
+
+
+def beauty_facts(*, wording, packaging_type="retail", net_quantity_confidence=0.95):
+    return {
+        "CLAIMS": {"product": {}, "claims": [{"claim_id": "c1", "wording": wording}]},
+        "LABEL": {"product": {"packaging_type": packaging_type},
+                  "label_fields": [{"field_key": "net_quantity", "value": "50 mL",
+                                     "confidence": net_quantity_confidence}]},
+        "INGREDIENTS": {"product": {}, "claims": [{"claim_id": "ing-1", "ingredient_name": "Aqua"}]},
+        **beauty_filler_facts(),
+    }
+
+
+def nutra_filler_facts():
+    """The five canonical dimensions Nutraceuticals has no distinctive
+    content for - see build_filler_requirement."""
+
+    return {
+        "CLASSIFICATION_ELIGIBILITY": {"product": {}, "category_confirmed_ref": "CAT-1"},
+        "DOCUMENTS": {"product": {},
+                      "documents": [{"document_type": "product_safety_report", "status": "uploaded"}],
+                      "consistency_checks": []},
+        "TESTING": {"product": {}, "stability_test_ref": "STAB-1"},
+        "REPRESENTATION": {"product": {}, "artwork_approved_ref": "ART-1"},
+        "REGISTRATION_READINESS": {"product": {}, "responsible_person_ref": "RP-1"},
+    }
+
+
+def nutra_facts(*, dosage_mg, wording, serving_size_confidence=0.9, intended_use="oral", batch_reference="BATCH-1"):
+    return {
+        "INGREDIENTS": {"product": {}, "daily_dosage_mg": dosage_mg, "batch_reference": batch_reference},
+        "CLAIMS": {"product": {}, "claims": [{"claim_id": "c1", "wording": wording}]},
+        "LABEL": {"product": {"intended_use": intended_use},
+                  "label_fields": [{"field_key": "serving_size", "value": "1 capsule",
+                                     "confidence": serving_size_confidence}]},
+        **nutra_filler_facts(),
+    }
+
+
+def meddevice_filler_facts():
+    """The four canonical dimensions Medical Devices has no distinctive
+    content for - see build_filler_requirement. None of these are
+    gated by device_risk_class - they're unconditional filler."""
+
+    return {
+        "INGREDIENTS": {"product": {}, "materials_ref": "MAT-1"},
+        "CLAIMS": {"product": {}, "performance_claim_review_ref": "PCR-1"},
+        "LABEL": {"product": {},
+                  "label_fields": [{"field_key": "udi", "value": "UDI-000123", "confidence": 0.9}]},
+        "REPRESENTATION": {"product": {}, "instructions_for_use_ref": "IFU-1"},
+    }
+
+
+def meddevice_facts(*, risk_class, confidence, documents=None, consistency_checks=None,
+                     bench_test_report_ref=None, notified_body_signoff_ref=None, self_declaration_ref=None):
+    classification = {"value": risk_class, "confidence": confidence}
+    testing_facts = {"product": {"device_risk_class": classification}}
+    if bench_test_report_ref is not None:
+        testing_facts["bench_test_report_ref"] = bench_test_report_ref
+
+    registration_facts = {"product": {"device_risk_class": classification}}
+    if notified_body_signoff_ref is not None:
+        registration_facts["notified_body_signoff_ref"] = notified_body_signoff_ref
+    if self_declaration_ref is not None:
+        registration_facts["self_declaration_ref"] = self_declaration_ref
+
+    return {
+        "CLASSIFICATION_ELIGIBILITY": {"product": {"device_risk_class": classification}},
+        "TESTING": testing_facts,
+        "REGISTRATION_READINESS": registration_facts,
+        "DOCUMENTS": {"product": {"device_risk_class": classification},
+                      "documents": documents or [], "consistency_checks": consistency_checks or []},
+        **meddevice_filler_facts(),
+    }

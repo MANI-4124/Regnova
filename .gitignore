@@ -2,3 +2,8 @@
 __pycache__/
 *.pyc
 regnova_backend.egg-info/
+
+# Baseline customer dashboard (local dev tool, not the production frontend)
+# lives outside this repo entirely at ../baseline-dashboard/ - this entry
+# is defense-in-depth only, in case it's ever copied in here by mistake.
+/baseline-dashboard/
