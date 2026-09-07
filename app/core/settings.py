@@ -45,6 +45,17 @@ class Settings(BaseSettings):
     bcrypt_rounds: int = 12
 
     # -------------------------------------------------
+    # Document storage (FR-04) - see app/storage/DocumentStorage
+    # -------------------------------------------------
+
+    document_storage_backend: str = "local"
+
+    document_storage_root: str = "./storage/documents"
+
+    # 100 MB, per FR-04's V1 upload limit.
+    document_max_size_bytes: int = 100 * 1024 * 1024
+
+    # -------------------------------------------------
     # Pydantic
     # -------------------------------------------------
 

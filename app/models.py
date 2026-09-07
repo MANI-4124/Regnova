@@ -40,6 +40,13 @@ from app.modules.finding.models import (
 )
 from app.modules.content_review.models import ContentVersionTransition
 from app.modules.notification.models import Notification
+from app.modules.document.models import Document
+from app.modules.document_version.models import (
+    DocumentField,
+    DocumentFieldRevision,
+    DocumentVersion,
+)
+from app.modules.evidence.models import Evidence
 # migrations/env.py
 
 import app.models
@@ -74,4 +81,9 @@ __all__ = [
     "FindingRevisionSourceLocation",
     "ContentVersionTransition",
     "Notification",
+    "Document",
+    "DocumentVersion",
+    "DocumentField",
+    "DocumentFieldRevision",
+    "Evidence",
 ]
