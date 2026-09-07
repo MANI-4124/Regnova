@@ -8,9 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.load_regulatory_content import (  # noqa: E402
     LoadContext,
-    compute_market,
     content_hash,
-    load_jurisdiction_config,
     run_load,
 )
 
@@ -65,10 +63,9 @@ def _write_content_dir(tmp_path, *, source_yaml=SOURCE_YAML, requirement_yaml=RE
     return content_dir
 
 
-def _ctx(client, writer, *, submit=True, multi_category=None):
+def _ctx(client, writer, *, submit=True):
     return LoadContext(
-        client=client, writer=writer, commit="deadbeef1234",
-        multi_category=multi_category or set(), submit=submit,
+        client=client, writer=writer, commit="deadbeef1234", submit=submit,
     )
 
 
@@ -79,25 +76,6 @@ def _status_of(db, entry):
 
 
 # --- pure functions --------------------------------------------------------
-
-
-def test_compute_market_plain_jurisdiction_by_default():
-    assert compute_market("Malaysia", "Beauty", multi_category=set()) == ("Malaysia", "Malaysia")
-
-
-def test_compute_market_composes_only_when_opted_in():
-    assert compute_market("TESTLAND", "Beauty", multi_category={"TESTLAND"}) == (
-        "TESTLAND-BEAUTY", "TESTLAND-BEAUTY",
-    )
-
-
-def test_load_jurisdiction_config_missing_file_is_empty_set(tmp_path):
-    assert load_jurisdiction_config(tmp_path) == set()
-
-
-def test_load_jurisdiction_config_reads_multi_category_list(tmp_path):
-    (tmp_path / "jurisdictions.yaml").write_text("multi_category: [TESTLAND, Freedonia]\n")
-    assert load_jurisdiction_config(tmp_path) == {"TESTLAND", "Freedonia"}
 
 
 # --- the two explicitly required behaviors ---------------------------------

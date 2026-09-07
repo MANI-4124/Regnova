@@ -61,25 +61,29 @@ def _create_product(client, tenant, name="Widget"):
     return response.json()
 
 
-def _create_version(client, tenant, product_id, version="1.0.0"):
+def _create_version(client, tenant, product_id, version="1.0.0", category="Beauty"):
     response = client.post(
         f"/products/{product_id}/versions",
-        json={"version": version, "notes": "initial"},
+        json={"version": version, "notes": "initial", "category": category},
         headers=tenant["headers"],
     )
     assert response.status_code == 200
     return response.json()
 
 
-def _create_state(client, tenant, product_id, product_version_id, market="Malaysia"):
+def _create_state(client, tenant, product_id, product_version_id, market="Malaysia", jurisdiction=None):
     return client.post(
         f"/products/{product_id}/market-states",
-        json={"product_version_id": product_version_id, "market": market},
+        json={
+            "product_version_id": product_version_id,
+            "market": market,
+            "jurisdiction": jurisdiction if jurisdiction is not None else market,
+        },
         headers=tenant["headers"],
     )
 
 
-def _create_active_release(client, writer, jurisdiction="Malaysia", market="Malaysia"):
+def _create_active_release(client, writer, jurisdiction="Malaysia", market="Malaysia", category="Beauty"):
     source = client.post("/sources", headers=writer["headers"]).json()
     source_version = client.post(
         f"/sources/{source['id']}/versions",
@@ -114,6 +118,7 @@ def _create_active_release(client, writer, jurisdiction="Malaysia", market="Mala
         json={
             "jurisdiction": jurisdiction,
             "market": market,
+            "category": category,
             "source_version_ids": [activated["id"]],
         },
         headers=writer["headers"],
@@ -278,7 +283,7 @@ def test_create_state_rejects_non_admin(client, db, tenant_a):
 
     response = client.post(
         f"/products/{product['id']}/market-states",
-        json={"product_version_id": version["id"], "market": "Malaysia"},
+        json={"product_version_id": version["id"], "market": "Malaysia", "jurisdiction": "Malaysia"},
         headers=headers,
     )
     assert response.status_code == 403
@@ -297,6 +302,7 @@ def test_partial_unique_index_rejects_duplicate_active_rows(client, db, tenant_a
         product_id=product_id,
         product_version_id=product_version_id,
         market="Malaysia",
+        jurisdiction="Malaysia",
     )
     db.add(first)
     db.commit()
@@ -306,6 +312,7 @@ def test_partial_unique_index_rejects_duplicate_active_rows(client, db, tenant_a
         product_id=product_id,
         product_version_id=product_version_id,
         market="Malaysia",
+        jurisdiction="Malaysia",
     )
     db.add(second)
     with pytest.raises(IntegrityError):
@@ -313,7 +320,8 @@ def test_partial_unique_index_rejects_duplicate_active_rows(client, db, tenant_a
     db.rollback()
 
     # The index is partial (status = 'ACTIVE' only) - an ARCHIVED duplicate
-    # for the same (organization_id, product_id, market) must still succeed.
+    # for the same (organization_id, product_id, jurisdiction) must still
+    # succeed.
     first.status = "ARCHIVED"
     db.add(first)
     db.commit()
@@ -323,6 +331,7 @@ def test_partial_unique_index_rejects_duplicate_active_rows(client, db, tenant_a
         product_id=product_id,
         product_version_id=product_version_id,
         market="Malaysia",
+        jurisdiction="Malaysia",
         status="ARCHIVED",
     )
     db.add(archived_duplicate)
@@ -344,9 +353,10 @@ def test_create_handles_race_by_returning_existing_active_state(
     payload = ProductMarketStateCreate(
         product_version_id=product_version_id,
         market=market,
+        jurisdiction=market,
     )
 
-    original_lookup = service.repository.get_active_for_product_market
+    original_lookup = service.repository.get_active_for_product_jurisdiction
     calls = {"count": 0}
 
     def flaky_lookup(*args, **kwargs):
@@ -358,7 +368,7 @@ def test_create_handles_race_by_returning_existing_active_state(
         return original_lookup(*args, **kwargs)
 
     monkeypatch.setattr(
-        service.repository, "get_active_for_product_market", flaky_lookup,
+        service.repository, "get_active_for_product_jurisdiction", flaky_lookup,
     )
 
     # The concurrent request wins the race and commits first.
@@ -367,6 +377,7 @@ def test_create_handles_race_by_returning_existing_active_state(
         product_id=product_id,
         product_version_id=product_version_id,
         market=market,
+        jurisdiction=market,
     )
     db.add(winner)
     db.commit()

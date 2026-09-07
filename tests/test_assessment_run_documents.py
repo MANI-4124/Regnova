@@ -13,20 +13,24 @@ def _create_product(client, tenant, name="Widget"):
     return response.json()
 
 
-def _create_version(client, tenant, product_id, version="1.0.0"):
+def _create_version(client, tenant, product_id, version="1.0.0", category="Documents"):
     response = client.post(
         f"/products/{product_id}/versions",
-        json={"version": version},
+        json={"version": version, "category": category},
         headers=tenant["headers"],
     )
     assert response.status_code == 200
     return response.json()
 
 
-def _create_state(client, tenant, product_id, product_version_id, market="Malaysia"):
+def _create_state(client, tenant, product_id, product_version_id, market="Malaysia", jurisdiction=None):
     response = client.post(
         f"/products/{product_id}/market-states",
-        json={"product_version_id": product_version_id, "market": market},
+        json={
+            "product_version_id": product_version_id,
+            "market": market,
+            "jurisdiction": jurisdiction if jurisdiction is not None else market,
+        },
         headers=tenant["headers"],
     )
     assert response.status_code == 200
@@ -111,7 +115,7 @@ def _activate_rule_version(client, writer, rule, version):
     )
 
 
-def _create_active_release(client, writer, rule_version_ids, requirement_version_ids):
+def _create_active_release(client, writer, rule_version_ids, requirement_version_ids, category="Documents"):
     source = client.post("/sources", headers=writer["headers"]).json()
     source_version = client.post(
         f"/sources/{source['id']}/versions",
@@ -133,6 +137,7 @@ def _create_active_release(client, writer, rule_version_ids, requirement_version
         json={
             "jurisdiction": "Malaysia",
             "market": "Malaysia",
+            "category": category,
             "source_version_ids": [activated_source["id"]],
             "requirement_version_ids": requirement_version_ids,
             "rule_version_ids": rule_version_ids,
@@ -425,6 +430,7 @@ def test_consistency_and_document_requirements_route_to_correct_subject_pools(cl
         json={
             "jurisdiction": "Malaysia",
             "market": "Malaysia",
+            "category": "Documents",
             "source_version_ids": [activated_source["id"]],
             "requirement_version_ids": [doc_requirement_version["id"], consistency_requirement_version["id"]],
             "rule_version_ids": [doc_rule_version["id"], consistency_rule_version["id"]],
@@ -437,7 +443,7 @@ def test_consistency_and_document_requirements_route_to_correct_subject_pools(cl
     version = _create_version(client, tenant_a, product["id"])
     state = client.post(
         f"/products/{product['id']}/market-states",
-        json={"product_version_id": version["id"], "market": "Malaysia"},
+        json={"product_version_id": version["id"], "market": "Malaysia", "jurisdiction": "Malaysia"},
         headers=tenant_a["headers"],
     ).json()
 

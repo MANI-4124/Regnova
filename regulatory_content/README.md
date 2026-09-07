@@ -20,15 +20,14 @@ through the existing content-review endpoints (`verify`/`activate`), or
 
 ```
 regulatory_content/
-  jurisdictions.yaml                        - category-composition config
   <jurisdiction>/<category>/sources/*.yaml
   <jurisdiction>/<category>/requirements/<dimension>/*.yaml
 ```
 
 `<jurisdiction>` and `<category>` are real, human-readable names (e.g.
-`Malaysia`, `Beauty`) - never the internal composite workaround some
-category-scoped content needs (see "Category scoping" below). `<dimension>`
-is one of the eight canonical dimensions:
+`Malaysia`, `Beauty`) - sent to the API exactly as authored (see
+"Category scoping" below). `<dimension>` is one of the eight canonical
+dimensions:
 `CLASSIFICATION_ELIGIBILITY` / `INGREDIENTS` / `CLAIMS` / `LABEL` /
 `DOCUMENTS` / `TESTING` / `REPRESENTATION` / `REGISTRATION_READINESS`.
 
@@ -95,19 +94,15 @@ if you plan to reorganize files later.
 
 ## Category scoping - why `jurisdiction`/`category` are separate fields
 
-This codebase has no real category-scoping model yet: `Product` has no
-category field, and the market-readiness auto-pin mechanism requires
-`RegulatoryBasisRelease.jurisdiction == market` exactly. A jurisdiction
-with only one category doesn't need any workaround - plain jurisdiction
-works fine as market. `jurisdictions.yaml`'s `multi_category` list opts a
-jurisdiction into composing `jurisdiction`/`market` as
-`"<jurisdiction>-<CATEGORY>"` for every file under it, for jurisdictions
-that genuinely have more than one category's content. **Files never
-encode this themselves** - `jurisdiction`/`category` are always the real,
-honest names; the loader is the only thing that knows about the
-workaround, in one function. See `../CLAUDE.md` for the full reasoning
-and the compatibility note about not composing an already-seeded
-jurisdiction.
+Category scoping is real: `ProductVersion.category`,
+`ProductMarketState.jurisdiction` and `RegulatoryBasisRelease.category`
+are genuine, separately-pinned fields (see `../CLAUDE.md` "Category
+scoping"). `jurisdiction`/`category` in every file are sent to the API
+exactly as authored - no composition, no per-jurisdiction opt-in list.
+`market` is still sent (required by `RequirementVersionCreate`/
+`RegulatoryBasisReleaseCreate`) but always set equal to `jurisdiction` -
+it's a non-authoritative field this codebase hasn't fully retired yet;
+see `../CLAUDE.md` for that open question.
 
 ## Loading
 

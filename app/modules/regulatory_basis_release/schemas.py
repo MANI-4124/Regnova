@@ -11,6 +11,11 @@ class RegulatoryBasisReleaseCreate(BaseModel):
 
     jurisdiction: str
     market: str
+    # Added by the category-scoping fix (see CLAUDE.md "Category
+    # scoping") - required, no default. Every included Requirement/Rule
+    # Version must match this exactly (validated in
+    # RegulatoryBasisReleaseService.create(), not just recorded here).
+    category: str
     status: str | None = None
 
     configuration: dict[str, Any] | None = None
@@ -58,6 +63,7 @@ class RegulatoryBasisReleaseResponse(BaseModel):
     id: UUID
     jurisdiction: str
     market: str
+    category: str
     status: str
 
     content_hash: str

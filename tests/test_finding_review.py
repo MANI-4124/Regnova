@@ -32,20 +32,24 @@ def _create_product(client, tenant, name="Widget"):
     return response.json()
 
 
-def _create_version(client, tenant, product_id, version="1.0.0"):
+def _create_version(client, tenant, product_id, version="1.0.0", category="Beauty"):
     response = client.post(
         f"/products/{product_id}/versions",
-        json={"version": version, "notes": "initial"},
+        json={"version": version, "notes": "initial", "category": category},
         headers=tenant["headers"],
     )
     assert response.status_code == 200
     return response.json()
 
 
-def _create_state(client, tenant, product_id, product_version_id, market="Malaysia"):
+def _create_state(client, tenant, product_id, product_version_id, market="Malaysia", jurisdiction=None):
     response = client.post(
         f"/products/{product_id}/market-states",
-        json={"product_version_id": product_version_id, "market": market},
+        json={
+            "product_version_id": product_version_id,
+            "market": market,
+            "jurisdiction": jurisdiction if jurisdiction is not None else market,
+        },
         headers=tenant["headers"],
     )
     assert response.status_code == 200

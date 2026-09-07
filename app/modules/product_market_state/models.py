@@ -43,16 +43,23 @@ class ProductMarketState(
         Index("ix_pms_organization_id", "organization_id"),
         Index("ix_pms_product_id", "product_id"),
         Index("ix_pms_market", "market"),
+        Index("ix_pms_jurisdiction", "jurisdiction"),
         # Partial unique index: at most one ACTIVE row per (org, product,
-        # market). Needs BOTH postgresql_where and sqlite_where to render
-        # as a genuine partial index on both dialects - verified
+        # jurisdiction) - moved from `market` to `jurisdiction` as part
+        # of the category-scoping fix (see CLAUDE.md "Category
+        # scoping"): jurisdiction is now the real pinning key, `market`
+        # is kept only as a non-authoritative legacy field, and two rows
+        # differing only in `market` for the same real jurisdiction
+        # would otherwise both be eligible to pin against the same
+        # release. Needs BOTH postgresql_where and sqlite_where to
+        # render as a genuine partial index on both dialects - verified
         # empirically that omitting sqlite_where silently produces a
         # full (non-partial) unique index on SQLite instead.
         Index(
-            "uq_pms_active_per_product_market",
+            "uq_pms_active_per_product_jurisdiction",
             "organization_id",
             "product_id",
-            "market",
+            "jurisdiction",
             unique=True,
             postgresql_where=text("status = 'ACTIVE'"),
             sqlite_where=text("status = 'ACTIVE'"),
@@ -83,7 +90,20 @@ class ProductMarketState(
         nullable=True,
     )
 
+    # Non-authoritative going forward - see CLAUDE.md "Category
+    # scoping": `jurisdiction` below is now the real pinning key.
+    # market's own long-term fate (display label / deprecated /
+    # a genuine third axis) is an open question this fix does not
+    # resolve; kept as-is (still required) rather than removed.
     market: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+    )
+
+    # The real pinning key, distinct from `market` above - added by the
+    # category-scoping fix. Immutable after creation (not exposed on
+    # ProductMarketStateUpdate), same as market's own existing behavior.
+    jurisdiction: Mapped[str] = mapped_column(
         String(100),
         nullable=False,
     )

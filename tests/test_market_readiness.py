@@ -11,10 +11,10 @@ def _create_product(client, tenant, name="Widget"):
     return response.json()
 
 
-def _create_version(client, tenant, product_id, version="1.0.0"):
+def _create_version(client, tenant, product_id, version="1.0.0", category="Claims"):
     response = client.post(
         f"/products/{product_id}/versions",
-        json={"version": version},
+        json={"version": version, "category": category},
         headers=tenant["headers"],
     )
     assert response.status_code == 200
@@ -30,10 +30,14 @@ def _publish_version(client, tenant, product_id, version_id):
     return response.json()
 
 
-def _create_state(client, tenant, product_id, product_version_id, market="Malaysia"):
+def _create_state(client, tenant, product_id, product_version_id, market="Malaysia", jurisdiction=None):
     response = client.post(
         f"/products/{product_id}/market-states",
-        json={"product_version_id": product_version_id, "market": market},
+        json={
+            "product_version_id": product_version_id,
+            "market": market,
+            "jurisdiction": jurisdiction if jurisdiction is not None else market,
+        },
         headers=tenant["headers"],
     )
     assert response.status_code == 200
@@ -128,7 +132,7 @@ def _activate_rule_version(client, writer, rule, version):
     )
 
 
-def _create_active_release(client, writer, rule_version_ids, requirement_version_ids, market="Malaysia"):
+def _create_active_release(client, writer, rule_version_ids, requirement_version_ids, market="Malaysia", category="Claims"):
     source = client.post("/sources", headers=writer["headers"]).json()
     source_version = client.post(
         f"/sources/{source['id']}/versions",
@@ -150,6 +154,7 @@ def _create_active_release(client, writer, rule_version_ids, requirement_version
         json={
             "jurisdiction": market,
             "market": market,
+            "category": category,
             "source_version_ids": [activated_source["id"]],
             "requirement_version_ids": requirement_version_ids,
             "rule_version_ids": rule_version_ids,
@@ -286,7 +291,7 @@ def test_dimension_without_claims_key_evaluates_flat_facts_as_single_subject(cli
         client, regulatory_content_writer,
         condition={"op": "exists", "field": "daily_dosage_mg"},
         output_type="REQUIREMENT_RESULT",
-        dimension="INGREDIENTS", category="Ingredients", obligation_type="DOSAGE_LIMIT",
+        dimension="INGREDIENTS", obligation_type="DOSAGE_LIMIT",
     )
     _create_active_release(
         client, regulatory_content_writer,
@@ -323,7 +328,7 @@ def test_dimension_with_rules_and_no_submitted_facts_is_no_subjects_resolved(cli
         client, regulatory_content_writer,
         condition={"op": "exists", "field": "daily_dosage_mg"},
         output_type="REQUIREMENT_RESULT",
-        dimension="INGREDIENTS", category="Ingredients", obligation_type="DOSAGE_LIMIT",
+        dimension="INGREDIENTS", obligation_type="DOSAGE_LIMIT",
     )
     _create_active_release(
         client, regulatory_content_writer,
@@ -361,7 +366,7 @@ def test_dimension_with_rules_and_explicit_empty_claims_list_is_no_subjects_reso
         client, regulatory_content_writer,
         condition={"op": "exists", "field": "daily_dosage_mg"},
         output_type="REQUIREMENT_RESULT",
-        dimension="INGREDIENTS", category="Ingredients", obligation_type="DOSAGE_LIMIT",
+        dimension="INGREDIENTS", obligation_type="DOSAGE_LIMIT",
     )
     _create_active_release(
         client, regulatory_content_writer,

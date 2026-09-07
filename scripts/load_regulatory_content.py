@@ -41,23 +41,20 @@ Idempotent and re-runnable:
 Folder layout:
 
     regulatory_content/
-      jurisdictions.yaml                        (multi_category: [...])
       <jurisdiction>/<category>/sources/*.yaml
       <jurisdiction>/<category>/requirements/<dimension>/*.yaml
 
-Category scoping is unmodelled in this codebase today (see CLAUDE.md
-"category scoping is unmodelled") - `jurisdiction` and `category` are
-always authored as separate, honest fields in every file; a jurisdiction
-listed in jurisdictions.yaml's `multi_category` gets its `jurisdiction`/
-`market` fields COMPUTED as `f"{jurisdiction}-{category.upper()}"` (the
-auto-pin mechanism requires jurisdiction == market exactly), everyone
-else keeps a plain jurisdiction as market. This composition happens in
-exactly one function (compute_market below) and nowhere else - no file
-ever encodes the workaround itself, so fixing category scoping properly
-later only ever touches this one function. SourceVersion.jurisdiction is
-never composed - it's real-world descriptive metadata about where a
-document was actually published, not a pinning key, and composing it
-would misrepresent the source itself.
+Category scoping is now real (see CLAUDE.md "Category scoping"):
+ProductVersion.category, ProductMarketState.jurisdiction and
+RegulatoryBasisRelease.category are genuine fields, so `jurisdiction`/
+`category` are sent to the API exactly as authored in each file - no
+composition, no workaround. `market` is still sent (required by
+RequirementVersionCreate/RegulatoryBasisReleaseCreate) but always set
+equal to `jurisdiction`, matching the "market is non-authoritative,
+kept for now" resolution - see CLAUDE.md. SourceVersion.jurisdiction is
+sent as authored too; it was never part of any pinning mechanism to
+begin with, being real-world descriptive metadata about where a
+document was actually published.
 
 Usage (from the backend/ directory, against a real running backend):
 
@@ -116,7 +113,6 @@ class LoadContext:
     client: TestClient
     writer: dict
     commit: str
-    multi_category: set
     submit: bool
     manifest: list = field(default_factory=list)
     source_map: dict = field(default_factory=dict)  # key -> source_version_id
@@ -212,25 +208,6 @@ def parse_provenance(notes: str | None) -> dict[str, str] | None:
     return fields
 
 
-def load_jurisdiction_config(content_dir: Path) -> set[str]:
-    config_path = content_dir / "jurisdictions.yaml"
-    if not config_path.exists():
-        return set()
-
-    data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    return set(data.get("multi_category", []))
-
-
-def compute_market(jurisdiction: str, category: str, multi_category: set[str]) -> tuple[str, str]:
-    """Returns (jurisdiction_to_send, market_to_send) - see module docstring."""
-
-    if jurisdiction in multi_category:
-        composed = f"{jurisdiction}-{category.upper()}"
-        return composed, composed
-
-    return jurisdiction, jurisdiction
-
-
 def slug_from_path(path: Path, content_dir: Path) -> str:
     relative = path.relative_to(content_dir).with_suffix("")
     return str(relative).replace("\\", "/").replace("/", "-")
@@ -311,11 +288,9 @@ def load_requirement_file(ctx: LoadContext, path: Path, content_dir: Path) -> No
     sha = content_hash(raw)
     note = provenance_note(relpath=relpath, commit=ctx.commit, content_sha256=sha)
 
-    jurisdiction, market = compute_market(data["jurisdiction"], data["category"], ctx.multi_category)
-
     payload = {
-        "jurisdiction": jurisdiction,
-        "market": market,
+        "jurisdiction": data["jurisdiction"],
+        "market": data["jurisdiction"],  # non-authoritative - see module docstring
         "authority": data["authority"],
         "category": data["category"],
         "dimension": data["dimension"],
@@ -448,10 +423,9 @@ def main() -> None:
         session.close()
 
     commit = detect_commit(content_dir, args.commit)
-    multi_category = load_jurisdiction_config(content_dir)
 
     with TestClient(app) as client:
-        ctx = LoadContext(client=client, writer=writer, commit=commit, multi_category=multi_category, submit=args.submit)
+        ctx = LoadContext(client=client, writer=writer, commit=commit, submit=args.submit)
         manifest = run_load(ctx, content_dir)
 
     print(f"commit: {commit}")

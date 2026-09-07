@@ -140,6 +140,7 @@ class ProductVersionService:
             organization_id=organization_id,
             product_id=product_id,
             version=payload.version,
+            category=payload.category,
             status=payload.status or ProductVersionStatus.DRAFT.value,
             notes=payload.notes,
         )

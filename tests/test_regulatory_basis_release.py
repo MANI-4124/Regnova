@@ -166,7 +166,7 @@ def _create_eligible_source_version(client, writer, **overrides):
 
 
 def _create_release(client, writer, **overrides):
-    payload = {"jurisdiction": "Malaysia", "market": "Malaysia"}
+    payload = {"jurisdiction": "Malaysia", "market": "Malaysia", "category": "Ingredients"}
     payload.update(overrides)
     return client.post(
         "/regulatory-basis-releases",
@@ -417,12 +417,77 @@ def test_releases_are_readable_across_organizations(client, tenant_a, tenant_b, 
     assert any(r["id"] == release["id"] for r in list_response.json())
 
 
+def test_create_release_rejects_requirement_version_with_mismatched_category(
+    client, regulatory_content_writer,
+):
+    """
+    Bundled with the jurisdiction check below - see CLAUDE.md "Category
+    scoping". _create_requirement_version defaults to category
+    "Ingredients", overridden here to "Beauty" while the release itself
+    keeps _create_release's own default category ("Ingredients") -
+    a real mismatch, not a contrived one.
+    """
+
+    requirement, version = _create_requirement_version(
+        client, regulatory_content_writer, category="Beauty",
+    )
+    version = _activate_requirement_version(client, regulatory_content_writer, requirement, version)
+
+    response = _create_release(
+        client, regulatory_content_writer,
+        requirement_version_ids=[version["id"]],
+    )
+    assert response.status_code == 409
+
+
+def test_create_release_rejects_requirement_version_with_mismatched_jurisdiction(
+    client, regulatory_content_writer,
+):
+    requirement, version = _create_requirement_version(
+        client, regulatory_content_writer, jurisdiction="Singapore", market="Singapore",
+    )
+    version = _activate_requirement_version(client, regulatory_content_writer, requirement, version)
+
+    response = _create_release(
+        client, regulatory_content_writer,  # default jurisdiction "Malaysia"
+        requirement_version_ids=[version["id"]],
+    )
+    assert response.status_code == 409
+
+
+def test_create_release_rejects_rule_version_whose_linked_requirement_has_mismatched_category(
+    client, regulatory_content_writer,
+):
+    """
+    RuleVersion carries no jurisdiction/category of its own - checked
+    transitively via the RequirementVersion it operationalizes (see
+    CLAUDE.md "Category scoping" / "Known limitations" for the
+    unchecked standalone-rule gap this can't close).
+    """
+
+    requirement, req_version = _create_requirement_version(
+        client, regulatory_content_writer, category="Beauty",
+    )
+    req_version = _activate_requirement_version(client, regulatory_content_writer, requirement, req_version)
+
+    rule, rule_version = _create_rule_version(
+        client, regulatory_content_writer, requirement_version_id=req_version["id"],
+    )
+    rule_version = _activate_rule_version(client, regulatory_content_writer, rule, rule_version)
+
+    response = _create_release(
+        client, regulatory_content_writer,
+        rule_version_ids=[rule_version["id"]],
+    )
+    assert response.status_code == 409
+
+
 def test_create_release_rejects_non_admin(client, db, tenant_a):
     headers = _non_admin_headers(db, tenant_a)
 
     response = client.post(
         "/regulatory-basis-releases",
-        json={"jurisdiction": "Malaysia", "market": "Malaysia"},
+        json={"jurisdiction": "Malaysia", "market": "Malaysia", "category": "Ingredients"},
         headers=headers,
     )
     assert response.status_code == 403

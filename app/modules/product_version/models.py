@@ -76,6 +76,20 @@ class ProductVersion(
         nullable=False,
     )
 
+    # Fixes the "category scoping is unmodelled" limitation (see
+    # CLAUDE.md) - the specific formulation/dossier this version
+    # represents is what market-readiness actually assesses, so this is
+    # where a genuine reformulation-driven reclassification would show
+    # up, not on Product itself. NOT NULL, no default - every real
+    # product version must be deliberately classified; no NULL/sentinel
+    # "uncategorized" bucket is provided (see CLAUDE.md "Category
+    # scoping" for the AC-FR-03-03 connection this leaves open, not
+    # closed).
+    category: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+    )
+
     status: Mapped[str] = mapped_column(
         String(50),
         nullable=False,

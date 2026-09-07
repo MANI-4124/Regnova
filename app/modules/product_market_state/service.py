@@ -109,10 +109,10 @@ class ProductMarketStateService:
         # not an error or a second row - and not a silent pointer update
         # if the request's product_version_id differs from the existing
         # row's.
-        existing = self.repository.get_active_for_product_market(
+        existing = self.repository.get_active_for_product_jurisdiction(
             organization_id,
             product_id,
-            payload.market,
+            payload.jurisdiction,
         )
         if existing is not None:
             return existing
@@ -123,12 +123,13 @@ class ProductMarketStateService:
             payload.product_version_id,
         )
 
-        # ProductMarketState only has one "market" field (FR-03), not
-        # jurisdiction+market like Requirement/RegulatoryBasisRelease -
-        # passing the same value for both params of the existing lookup.
-        release = self.releases.get_active_for_jurisdiction(
-            payload.market,
-            payload.market,
+        # Auto-pin resolution key, post category-scoping fix (see
+        # CLAUDE.md "Category scoping"): jurisdiction from the payload
+        # + the pinned product version's own category - not `market`,
+        # which is kept only as a non-authoritative field.
+        release = self.releases.get_active_for_jurisdiction_and_category(
+            payload.jurisdiction,
+            version.category,
         )
 
         state = ProductMarketState(
@@ -136,6 +137,7 @@ class ProductMarketStateService:
             product_id=product_id,
             product_version_id=version.id,
             market=payload.market,
+            jurisdiction=payload.jurisdiction,
             regulatory_basis_release_id=release.id if release else None,
             created_by_user_id=actor_user_id,
         )
@@ -149,10 +151,10 @@ class ProductMarketStateService:
             # caught it - resolve the same way AC-FR-03-01 asks for.
             self.db.rollback()
 
-            existing = self.repository.get_active_for_product_market(
+            existing = self.repository.get_active_for_product_jurisdiction(
                 organization_id,
                 product_id,
-                payload.market,
+                payload.jurisdiction,
             )
             if existing is not None:
                 return existing

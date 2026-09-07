@@ -10,6 +10,11 @@ class ProductMarketStateCreate(BaseModel):
 
     product_version_id: UUID
     market: str
+    # Added by the category-scoping fix (see CLAUDE.md "Category
+    # scoping") - the real pinning key. `market` is kept, required, but
+    # non-authoritative; auto-pin resolution reads jurisdiction (+ the
+    # pinned product version's own category) instead.
+    jurisdiction: str
 
 
 class ProductMarketStateUpdate(BaseModel):
@@ -31,6 +36,7 @@ class ProductMarketStateResponse(BaseModel):
     product_id: UUID
     product_version_id: UUID | None
     market: str
+    jurisdiction: str
     regulatory_basis_release_id: UUID | None
     gate: str
     status: str

@@ -353,7 +353,7 @@ def test_require_regulatory_content_writer_rejects_non_writer(client, db, tenant
 
     response = client.post(
         "/regulatory-basis-releases",
-        json={"jurisdiction": "Malaysia", "market": "Malaysia"},
+        json={"jurisdiction": "Malaysia", "market": "Malaysia", "category": "Beauty"},
         headers=hr["headers"],
     )
     assert response.status_code == 403

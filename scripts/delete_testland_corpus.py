@@ -16,10 +16,12 @@ Structural provenance used to find rows, NOT trust/an app-level flag:
      carry no jurisdiction/provenance field of their own (see
      fixtures.py's module docstring).
   3. Every RegulatoryBasisRelease whose jurisdiction starts with
-     tl.JURISDICTION ("TESTLAND") - a prefix, not an exact value,
-     because jurisdiction must equal market per category
-     (TESTLAND-BEAUTY/TESTLAND-NUTRA/TESTLAND-MEDDEVICE) for
-     ProductMarketStateService's auto-pin to work - see fixtures.py.
+     tl.JURISDICTION ("TESTLAND") - a prefix match rather than an exact
+     one is kept defensively (also catches any pre-category-scoping-fix
+     rows still using the old per-category "TESTLAND-BEAUTY" etc.
+     composite jurisdiction), even though every release this corpus
+     creates today sets jurisdiction to the plain "TESTLAND" constant
+     and is told apart by `category` instead - see fixtures.py.
 
 Run against a real (non-SQLite) database from the backend/ directory:
 

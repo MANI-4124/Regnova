@@ -160,10 +160,10 @@ def _create_product(client, tenant, name="Widget"):
     return response.json()
 
 
-def _create_version(client, tenant, product_id, version="1.0.0"):
+def _create_version(client, tenant, product_id, version="1.0.0", category="Beauty"):
     response = client.post(
         f"/products/{product_id}/versions",
-        json={"version": version},
+        json={"version": version, "category": category},
         headers=tenant["headers"],
     )
     assert response.status_code == 200

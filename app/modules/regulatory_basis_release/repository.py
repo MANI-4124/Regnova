@@ -23,14 +23,23 @@ class RegulatoryBasisReleaseRepository(BaseRepository[RegulatoryBasisRelease]):
         )
         return list(self.db.scalars(statement))
 
-    def get_active_for_jurisdiction(
+    def get_active_for_jurisdiction_and_category(
         self,
         jurisdiction: str,
-        market: str,
+        category: str,
     ) -> RegulatoryBasisRelease | None:
+        """
+        The release-resolution key as of the category-scoping fix (see
+        CLAUDE.md "Category scoping"): two real, independent columns,
+        replacing the old get_active_for_jurisdiction(jurisdiction,
+        market) - which callers could only make work by encoding
+        category into a composite `market` string (TESTLAND-BEAUTY and
+        friends). `market` is not read here at all any more.
+        """
+
         statement = select(RegulatoryBasisRelease).where(
             RegulatoryBasisRelease.jurisdiction == jurisdiction,
-            RegulatoryBasisRelease.market == market,
+            RegulatoryBasisRelease.category == category,
             RegulatoryBasisRelease.status == RegulatoryBasisReleaseStatus.ACTIVE.value,
         )
         return self.db.scalar(statement)

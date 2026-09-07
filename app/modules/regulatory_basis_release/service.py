@@ -23,6 +23,7 @@ from .exceptions import (
     RegulatoryBasisReleaseDuplicateContent,
     RegulatoryBasisReleaseIneligibleVersion,
     RegulatoryBasisReleaseNotFound,
+    RegulatoryBasisReleaseVersionScopeMismatch,
 )
 from .models import RegulatoryBasisRelease, RegulatoryBasisReleaseStatus
 from .repository import RegulatoryBasisReleaseRepository
@@ -76,7 +77,13 @@ class RegulatoryBasisReleaseService:
 
         return versions
 
-    def _resolve_eligible_requirement_versions(self, ids: list[UUID]):
+    def _resolve_eligible_requirement_versions(
+        self,
+        ids: list[UUID],
+        *,
+        jurisdiction: str,
+        category: str,
+    ):
         versions = []
 
         for version_id in ids:
@@ -91,11 +98,24 @@ class RegulatoryBasisReleaseService:
             ):
                 raise RegulatoryBasisReleaseIneligibleVersion()
 
+            # Bundled with the eligibility check above, not a separate
+            # pass - see CLAUDE.md "Category scoping". A version that's
+            # ACTIVE+verified but scoped to a different jurisdiction/
+            # category has no business in this release regardless.
+            if version.jurisdiction != jurisdiction or version.category != category:
+                raise RegulatoryBasisReleaseVersionScopeMismatch()
+
             versions.append(version)
 
         return versions
 
-    def _resolve_eligible_rule_versions(self, ids: list[UUID]):
+    def _resolve_eligible_rule_versions(
+        self,
+        ids: list[UUID],
+        *,
+        jurisdiction: str,
+        category: str,
+    ):
         versions = []
 
         for version_id in ids:
@@ -106,6 +126,24 @@ class RegulatoryBasisReleaseService:
 
             if version.status != RuleVersionStatus.ACTIVE.value or version.verified_at is None:
                 raise RegulatoryBasisReleaseIneligibleVersion()
+
+            # RuleVersion carries no jurisdiction/category of its own -
+            # only validated transitively, via the RequirementVersion it
+            # operationalizes, when one exists. A standalone rule
+            # (requirement_version_id is None - C6's CALCULATION_COMPONENT
+            # output type) has nothing to check against and is let
+            # through unchecked - a real, named gap, not silently
+            # resolved: see CLAUDE.md "Known limitations" for why this
+            # can't be closed without giving RuleVersion its own
+            # jurisdiction/category fields.
+            if version.requirement_version_id is not None:
+                linked = self.requirement_versions.get_by_id_only(
+                    version.requirement_version_id,
+                )
+                if linked is not None and (
+                    linked.jurisdiction != jurisdiction or linked.category != category
+                ):
+                    raise RegulatoryBasisReleaseVersionScopeMismatch()
 
             versions.append(version)
 
@@ -131,9 +169,13 @@ class RegulatoryBasisReleaseService:
         )
         requirement_versions = self._resolve_eligible_requirement_versions(
             payload.requirement_version_ids or [],
+            jurisdiction=payload.jurisdiction,
+            category=payload.category,
         )
         rule_versions = self._resolve_eligible_rule_versions(
             payload.rule_version_ids or [],
+            jurisdiction=payload.jurisdiction,
+            category=payload.category,
         )
 
         if payload.supersedes_id is not None:
@@ -145,9 +187,9 @@ class RegulatoryBasisReleaseService:
         existing_active = None
 
         if status == RegulatoryBasisReleaseStatus.ACTIVE.value:
-            existing_active = self.repository.get_active_for_jurisdiction(
+            existing_active = self.repository.get_active_for_jurisdiction_and_category(
                 payload.jurisdiction,
-                payload.market,
+                payload.category,
             )
 
             if existing_active is not None and payload.supersedes_id != existing_active.id:

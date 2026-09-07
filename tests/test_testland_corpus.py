@@ -47,7 +47,7 @@ def _passing(snapshot):
 
 
 def test_beauty_passing(client, tenant_a, beauty):
-    _, _, state = tl.new_golden_product(client, tenant_a, "Beauty Passing", tl.MARKET_BEAUTY)
+    _, _, state = tl.new_golden_product(client, tenant_a, "Beauty Passing", tl.CATEGORY_BEAUTY)
 
     input_facts = tl.beauty_facts(wording="Softens and smooths skin")
     snapshot = tl.run_market_readiness(client, tenant_a, state["id"], input_facts)
@@ -57,7 +57,7 @@ def test_beauty_passing(client, tenant_a, beauty):
 
 
 def test_beauty_critical_fail(client, tenant_a, beauty):
-    _, _, state = tl.new_golden_product(client, tenant_a, "Beauty Critical", tl.MARKET_BEAUTY)
+    _, _, state = tl.new_golden_product(client, tenant_a, "Beauty Critical", tl.CATEGORY_BEAUTY)
 
     input_facts = tl.beauty_facts(wording="Cures Acne")
     snapshot = tl.run_market_readiness(client, tenant_a, state["id"], input_facts)
@@ -71,7 +71,7 @@ def test_beauty_critical_fail(client, tenant_a, beauty):
 
 
 def test_beauty_human_review(client, tenant_a, beauty):
-    _, _, state = tl.new_golden_product(client, tenant_a, "Beauty HumanReview", tl.MARKET_BEAUTY)
+    _, _, state = tl.new_golden_product(client, tenant_a, "Beauty HumanReview", tl.CATEGORY_BEAUTY)
 
     input_facts = tl.beauty_facts(wording="Softens and smooths skin", net_quantity_confidence=0.2)
     snapshot = tl.run_market_readiness(client, tenant_a, state["id"], input_facts)
@@ -83,7 +83,7 @@ def test_beauty_human_review(client, tenant_a, beauty):
 
 
 def test_beauty_not_applicable(client, tenant_a, beauty):
-    _, _, state = tl.new_golden_product(client, tenant_a, "Beauty NotApplicable", tl.MARKET_BEAUTY)
+    _, _, state = tl.new_golden_product(client, tenant_a, "Beauty NotApplicable", tl.CATEGORY_BEAUTY)
 
     input_facts = tl.beauty_facts(wording="Softens and smooths skin", packaging_type="bulk")
     snapshot = tl.run_market_readiness(client, tenant_a, state["id"], input_facts)
@@ -106,7 +106,7 @@ def test_beauty_not_applicable(client, tenant_a, beauty):
 
 
 def test_nutra_passing(client, tenant_a, nutra):
-    _, _, state = tl.new_golden_product(client, tenant_a, "Nutra Passing", tl.MARKET_NUTRA)
+    _, _, state = tl.new_golden_product(client, tenant_a, "Nutra Passing", tl.CATEGORY_NUTRA)
 
     input_facts = tl.nutra_facts(dosage_mg=500, wording="Supports normal energy metabolism")
     snapshot = tl.run_market_readiness(client, tenant_a, state["id"], input_facts)
@@ -116,7 +116,7 @@ def test_nutra_passing(client, tenant_a, nutra):
 
 
 def test_nutra_critical_fail(client, tenant_a, nutra):
-    _, _, state = tl.new_golden_product(client, tenant_a, "Nutra Critical", tl.MARKET_NUTRA)
+    _, _, state = tl.new_golden_product(client, tenant_a, "Nutra Critical", tl.CATEGORY_NUTRA)
 
     input_facts = tl.nutra_facts(dosage_mg=2500, wording="Supports normal energy metabolism")
     snapshot = tl.run_market_readiness(client, tenant_a, state["id"], input_facts)
@@ -129,7 +129,7 @@ def test_nutra_critical_fail(client, tenant_a, nutra):
 
 
 def test_nutra_human_review(client, tenant_a, nutra):
-    _, _, state = tl.new_golden_product(client, tenant_a, "Nutra HumanReview", tl.MARKET_NUTRA)
+    _, _, state = tl.new_golden_product(client, tenant_a, "Nutra HumanReview", tl.CATEGORY_NUTRA)
 
     input_facts = tl.nutra_facts(
         dosage_mg=500, wording="Supports normal energy metabolism", serving_size_confidence=0.2,
@@ -143,7 +143,7 @@ def test_nutra_human_review(client, tenant_a, nutra):
 
 
 def test_nutra_not_applicable(client, tenant_a, nutra):
-    _, _, state = tl.new_golden_product(client, tenant_a, "Nutra NotApplicable", tl.MARKET_NUTRA)
+    _, _, state = tl.new_golden_product(client, tenant_a, "Nutra NotApplicable", tl.CATEGORY_NUTRA)
 
     input_facts = tl.nutra_facts(
         dosage_mg=500, wording="Supports normal energy metabolism", intended_use="topical",
@@ -161,7 +161,7 @@ def test_nutra_not_applicable(client, tenant_a, nutra):
 
 
 def test_meddevice_passing_class_i(client, tenant_a, meddevice):
-    _, _, state = tl.new_golden_product(client, tenant_a, "MedDevice Passing", tl.MARKET_MEDDEVICE)
+    _, _, state = tl.new_golden_product(client, tenant_a, "MedDevice Passing", tl.CATEGORY_MEDDEVICE)
 
     input_facts = tl.meddevice_facts(risk_class="I", confidence=0.95, self_declaration_ref="SD-1")
     snapshot = tl.run_market_readiness(client, tenant_a, state["id"], input_facts)
@@ -171,7 +171,7 @@ def test_meddevice_passing_class_i(client, tenant_a, meddevice):
 
 
 def test_meddevice_critical_fail_class_iii_missing_clinical_evidence(client, tenant_a, meddevice):
-    _, _, state = tl.new_golden_product(client, tenant_a, "MedDevice Critical", tl.MARKET_MEDDEVICE)
+    _, _, state = tl.new_golden_product(client, tenant_a, "MedDevice Critical", tl.CATEGORY_MEDDEVICE)
 
     # Clinical evidence report deliberately omitted from documents[];
     # bench test / notified-body refs are supplied so only the one
@@ -190,7 +190,7 @@ def test_meddevice_critical_fail_class_iii_missing_clinical_evidence(client, ten
 
 
 def test_meddevice_human_review_low_confidence_classification(client, tenant_a, meddevice):
-    _, _, state = tl.new_golden_product(client, tenant_a, "MedDevice HumanReview", tl.MARKET_MEDDEVICE)
+    _, _, state = tl.new_golden_product(client, tenant_a, "MedDevice HumanReview", tl.CATEGORY_MEDDEVICE)
 
     # Every Class-III-conditional document/reference is supplied as
     # PRESENT, so each gated rule's own "not_exists" leg resolves a
@@ -215,7 +215,7 @@ def test_meddevice_human_review_low_confidence_classification(client, tenant_a, 
 
 
 def test_meddevice_not_applicable_class_i_excluded_from_class_iii_eligibility(client, tenant_a, meddevice):
-    _, _, state = tl.new_golden_product(client, tenant_a, "MedDevice NotApplicable", tl.MARKET_MEDDEVICE)
+    _, _, state = tl.new_golden_product(client, tenant_a, "MedDevice NotApplicable", tl.CATEGORY_MEDDEVICE)
 
     input_facts = tl.meddevice_facts(risk_class="I", confidence=0.95, self_declaration_ref="SD-1")
     snapshot = tl.run_market_readiness(client, tenant_a, state["id"], input_facts)

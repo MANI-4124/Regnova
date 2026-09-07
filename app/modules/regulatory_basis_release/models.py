@@ -58,6 +58,7 @@ class RegulatoryBasisRelease(
     __table_args__ = (
         Index("ix_rbr_jurisdiction", "jurisdiction"),
         Index("ix_rbr_market", "market"),
+        Index("ix_rbr_category", "category"),
         Index("ix_rbr_status", "status"),
     )
 
@@ -66,7 +67,21 @@ class RegulatoryBasisRelease(
         nullable=False,
     )
 
+    # Non-authoritative going forward, same status as
+    # ProductMarketState.market - see CLAUDE.md "Category scoping".
+    # `jurisdiction` + `category` are the real resolution key as of
+    # this fix; RegulatoryBasisReleaseRepository.get_active_for_jurisdiction_and_category
+    # no longer reads this field at all.
     market: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+    )
+
+    # Added by the category-scoping fix - NOT NULL, no default. Every
+    # requirement_version included in this release must share this
+    # exact value (validated in RegulatoryBasisReleaseService.create(),
+    # not just recorded here) - see CLAUDE.md "Category scoping".
+    category: Mapped[str] = mapped_column(
         String(100),
         nullable=False,
     )

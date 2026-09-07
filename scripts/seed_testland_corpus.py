@@ -168,20 +168,20 @@ def main() -> None:
         # dashboard pointed at this seeded data has three visibly
         # different states to show, not three identical "not yet
         # assessed" cells - see CLAUDE.md "TESTLAND corpus".
-        _, _, beauty_state = tl.new_golden_product(client, tenant, "TESTLAND Demo - Beauty", tl.MARKET_BEAUTY)
+        _, _, beauty_state = tl.new_golden_product(client, tenant, "TESTLAND Demo - Beauty", tl.CATEGORY_BEAUTY)
         beauty_snapshot = tl.run_market_readiness(
             client, tenant, beauty_state["id"],
             tl.beauty_facts(wording="Softens and smooths skin"),  # clean pass
         )
 
-        _, _, nutra_state = tl.new_golden_product(client, tenant, "TESTLAND Demo - Nutraceuticals", tl.MARKET_NUTRA)
+        _, _, nutra_state = tl.new_golden_product(client, tenant, "TESTLAND Demo - Nutraceuticals", tl.CATEGORY_NUTRA)
         nutra_snapshot = tl.run_market_readiness(
             client, tenant, nutra_state["id"],
             tl.nutra_facts(dosage_mg=2500, wording="Supports normal energy metabolism"),  # critical-fail
         )
 
         _, _, meddevice_state = tl.new_golden_product(
-            client, tenant, "TESTLAND Demo - Medical Devices", tl.MARKET_MEDDEVICE,
+            client, tenant, "TESTLAND Demo - Medical Devices", tl.CATEGORY_MEDDEVICE,
         )
         meddevice_snapshot = tl.run_market_readiness(
             client, tenant, meddevice_state["id"],

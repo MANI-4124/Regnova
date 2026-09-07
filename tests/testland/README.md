@@ -9,9 +9,10 @@ cases live in `tests/test_testland_corpus.py`; a demo-seeding pair lives in
 
 ## Provenance - how you know this isn't real
 
-- Jurisdiction/market values: `TESTLAND-BEAUTY`, `TESTLAND-NUTRA`,
-  `TESTLAND-MEDDEVICE` (share the `TESTLAND` prefix, not one exact value -
-  see "Why jurisdiction equals market" below).
+- Jurisdiction: the plain constant `"TESTLAND"`, shared by all three
+  categories (`Beauty`/`Nutraceuticals`/`Medical Devices` - see "Category
+  scoping" below for why this no longer needs a per-category composite
+  value).
 - Authority: `"Testland Bureau of Product Safety (TBPS)"` - does not exist.
 - Every `SourceVersion`/`RequirementVersion`/`RuleVersion.notes` field
   carries the literal string `[REGNOVA-SYNTHETIC-CORPUS:TESTLAND] Fictional
@@ -23,18 +24,24 @@ cases live in `tests/test_testland_corpus.py`; a demo-seeding pair lives in
 - One dedicated demo `Organization` (name-prefixed the same way) owns
   every customer-side row `scripts/seed_testland_corpus.py` creates.
 
-## Why jurisdiction equals market (not a shared constant)
+## Category scoping - jurisdiction is now a real, shared constant
 
-`ProductMarketState` has only one `market` field - no jurisdiction distinct
-from it. Its auto-pin lookup (`ProductMarketStateService.create()`) calls
-`get_active_for_jurisdiction(payload.market, payload.market)`, passing that
-one value as **both** arguments. A single shared `"TESTLAND"` jurisdiction
-constant across all three category markets was the original design and it
-does not pin - discovered as a real bug while building this corpus (every
-release failed `NO_REGULATORY_BASIS` until fixed). Each category's
-`RegulatoryBasisRelease.jurisdiction` must equal its own `market` exactly.
-Logged as a standing limitation in `CLAUDE.md` ("category scoping is
-unmodelled anywhere").
+This corpus originally needed a per-category composite jurisdiction/market
+value (`TESTLAND-BEAUTY`/`TESTLAND-NUTRA`/`TESTLAND-MEDDEVICE`), discovered
+as a real bug while building it: `ProductMarketState` had only one `market`
+field, no jurisdiction distinct from it, and its auto-pin lookup passed
+that one value as both the jurisdiction and market argument - a single
+shared `"TESTLAND"` jurisdiction constant across all three categories did
+not pin (every release failed `NO_REGULATORY_BASIS` until each category
+got its own market string). See `CLAUDE.md` "Category scoping" for the
+full resolution: `ProductVersion.category`, `ProductMarketState.jurisdiction`
+and `RegulatoryBasisRelease.category` are now real, independently-pinned
+fields, so this corpus was updated to match what real multi-category
+content would actually look like - `JURISDICTION = "TESTLAND"` is shared by
+all three categories, and `CATEGORY_BEAUTY`/`CATEGORY_NUTRA`/
+`CATEGORY_MEDDEVICE` (`"Beauty"`/`"Nutraceuticals"`/`"Medical Devices"`) are
+what actually tells them apart now, both on `ProductVersion.category` and
+on each category's `RegulatoryBasisRelease.category`.
 
 ## "Passing" means G3, not G4
 

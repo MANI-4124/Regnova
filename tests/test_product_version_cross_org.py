@@ -16,10 +16,10 @@ def _create_product(client, tenant, name="Widget"):
     return response.json()
 
 
-def _create_version(client, tenant, product_id, version="1.0.0"):
+def _create_version(client, tenant, product_id, version="1.0.0", category="Beauty"):
     response = client.post(
         f"/products/{product_id}/versions",
-        json={"version": version, "notes": "initial"},
+        json={"version": version, "notes": "initial", "category": category},
         headers=tenant["headers"],
     )
     assert response.status_code == 200
@@ -48,7 +48,7 @@ def test_create_version_for_product_in_another_org_returns_404(client, tenant_a,
 
     response = client.post(
         f"/products/{product['id']}/versions",
-        json={"version": "1.0.0"},
+        json={"version": "1.0.0", "category": "Beauty"},
         headers=tenant_a["headers"],
     )
 
@@ -139,7 +139,7 @@ def test_create_version_ignores_organization_id_query_param(client, tenant_a, te
     response = client.post(
         f"/products/{product['id']}/versions",
         params={"organization_id": str(tenant_b["organization"].id)},
-        json={"version": "1.0.0"},
+        json={"version": "1.0.0", "category": "Beauty"},
         headers=tenant_a["headers"],
     )
 

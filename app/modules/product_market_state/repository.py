@@ -70,16 +70,24 @@ class ProductMarketStateRepository(BaseRepository[ProductMarketState]):
 
         return self.db.scalar(statement)
 
-    def get_active_for_product_market(
+    def get_active_for_product_jurisdiction(
         self,
         organization_id: UUID,
         product_id: UUID,
-        market: str,
+        jurisdiction: str,
     ) -> ProductMarketState | None:
+        """
+        Renamed from get_active_for_product_market by the category-
+        scoping fix (see CLAUDE.md "Category scoping") - jurisdiction is
+        now the real uniqueness/pinning key (see
+        uq_pms_active_per_product_jurisdiction), market is kept only as
+        a non-authoritative field.
+        """
+
         statement = select(ProductMarketState).where(
             ProductMarketState.organization_id == organization_id,
             ProductMarketState.product_id == product_id,
-            ProductMarketState.market == market,
+            ProductMarketState.jurisdiction == jurisdiction,
             ProductMarketState.status == ProductMarketStateStatus.ACTIVE.value,
         )
 
