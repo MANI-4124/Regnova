@@ -10,6 +10,7 @@ from app.core.settings import get_settings
 from app.modules.assessment_run.models import AssessmentRun, AssessmentRunStatus, DimensionAssessmentState
 from app.modules.assessment_run.repository import AssessmentRunRepository, DimensionAssessmentRepository
 from app.modules.assessment_run.service import AssessmentRunService
+from app.modules.audit.repository import OutboxRepository
 from app.modules.finding.models import TERMINAL_FINDING_STATUSES
 from app.modules.finding.repository import FindingRepository, FindingRevisionRepository
 from app.modules.product_market_state.exceptions import ProductMarketStateNotFound
@@ -88,6 +89,7 @@ class MarketReadinessService:
         self.findings = FindingRepository(db)
         self.finding_revisions = FindingRevisionRepository(db)
         self.snapshots = StateSnapshotRepository(db)
+        self.outbox = OutboxRepository(db)
         # Real, not a placeholder - the running application's own
         # version, the closest thing to C10's "engine build" field this
         # codebase has today.
@@ -151,6 +153,7 @@ class MarketReadinessService:
         organization_id: UUID,
         payload: MarketReadinessRunCreate,
         actor_user_id: UUID | None = None,
+        correlation_id: str | None = None,
     ) -> StateSnapshot:
         state = self._get_state_or_404(organization_id, payload.product_market_state_id)
 
@@ -182,6 +185,7 @@ class MarketReadinessService:
                 dimension_value = dimension.value
                 assessment, reused = self._resolve_dimension(
                     run, state, dimension_value, payload.input_facts, forced_rerun_dimensions,
+                    correlation_id=correlation_id,
                 )
                 score, excluded = self._dimension_score(assessment)
                 dimension_summary_raw[dimension_value] = {
@@ -203,9 +207,12 @@ class MarketReadinessService:
         self.runs.update(run)
         self.db.commit()
 
-        return self._build_snapshot(state, run, dimension_summary_raw)
+        return self._build_snapshot(state, run, dimension_summary_raw, correlation_id=correlation_id)
 
-    def _resolve_dimension(self, run, state, dimension_value, input_facts, forced_rerun_dimensions):
+    def _resolve_dimension(
+        self, run, state, dimension_value, input_facts, forced_rerun_dimensions,
+        correlation_id: str | None = None,
+    ):
         """
         Two distinct reuse checks for Claims/Label/every other
         caller-driven dimension - see CLAUDE.md "Market readiness" for
@@ -257,7 +264,9 @@ class MarketReadinessService:
         if reusable is not None:
             return reusable, True
 
-        self.assessment_runs.run_dimension(run, dimension_value, dimension_facts)
+        self.assessment_runs.run_dimension(
+            run, dimension_value, dimension_facts, correlation_id=correlation_id,
+        )
         assessment = self.dimension_assessments.get_latest_for_run_dimension(run.id, dimension_value)
         return assessment, False
 
@@ -444,7 +453,13 @@ class MarketReadinessService:
         reasons.append("G4_UNREACHABLE_NO_APPROVAL_MODEL")
         return ProductMarketStateGate.G3.value, reasons
 
-    def _build_snapshot(self, state, run, dimension_summary_raw: dict[str, dict[str, Any]]) -> StateSnapshot:
+    def _build_snapshot(
+        self,
+        state,
+        run,
+        dimension_summary_raw: dict[str, dict[str, Any]],
+        correlation_id: str | None = None,
+    ) -> StateSnapshot:
         open_findings = self._open_findings(state.organization_id, state.id)
 
         unresolved_severity_counts = {severity: 0 for severity in _SEVERITY_ORDER}
@@ -512,6 +527,38 @@ class MarketReadinessService:
 
         state.gate = gate
         self.states.update(state)
+
+        self.outbox.append(
+            organization_id=state.organization_id,
+            event_type="AssessmentCompleted",
+            schema_version=1,
+            payload={
+                "assessment_run_id": str(run.id),
+                "state_snapshot_id": str(snapshot.id),
+                "product_market_state_id": str(state.id),
+                "overall_gate": gate,
+                "raw_progress": raw_progress,
+                "displayed_progress": displayed_progress,
+            },
+            actor_user_id=run.requested_by_user_id,
+            correlation_id=correlation_id,
+        )
+        self.outbox.append(
+            organization_id=state.organization_id,
+            event_type="StateCurrentChanged",
+            schema_version=1,
+            payload={
+                "product_market_state_id": str(state.id),
+                "new_snapshot_id": str(snapshot.id),
+                "previous_snapshot_id": str(previous_current.id) if previous_current else None,
+                "stale_reason": (
+                    "SUPERSEDED_BY_NEW_SNAPSHOT" if previous_current is not None else None
+                ),
+                "overall_gate": gate,
+            },
+            actor_user_id=run.requested_by_user_id,
+            correlation_id=correlation_id,
+        )
 
         self.db.commit()
         self.db.refresh(snapshot)

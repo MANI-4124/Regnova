@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.modules.audit.repository import OutboxRepository
 from app.modules.document_version.exceptions import DocumentVersionNotFound
 from app.modules.document_version.models import DocumentVersionStatus
 from app.modules.document_version.repository import DocumentVersionRepository
@@ -35,6 +36,7 @@ class EvidenceService:
         self.products = ProductRepository(db)
         self.document_versions = DocumentVersionRepository(db)
         self.requirement_versions = RequirementVersionRepository(db)
+        self.outbox = OutboxRepository(db)
 
     def get_all(
         self,
@@ -60,6 +62,7 @@ class EvidenceService:
         organization_id: UUID,
         payload: EvidenceCreate,
         actor_user_id: UUID | None = None,
+        correlation_id: str | None = None,
     ) -> Evidence:
         if self.products.get_by_id(organization_id, payload.product_id) is None:
             raise ProductNotFound()
@@ -103,6 +106,25 @@ class EvidenceService:
 
         try:
             self.repository.create(evidence)
+
+            self.outbox.append(
+                organization_id=organization_id,
+                event_type="EvidenceLinked",
+                schema_version=1,
+                payload={
+                    "evidence_id": str(evidence.id),
+                    "document_version_id": str(evidence.document_version_id),
+                    "product_id": str(evidence.product_id),
+                    "requirement_version_id": (
+                        str(evidence.requirement_version_id)
+                        if evidence.requirement_version_id else None
+                    ),
+                    "notes": evidence.notes,
+                },
+                actor_user_id=actor_user_id,
+                correlation_id=correlation_id,
+            )
+
             self.db.commit()
         except IntegrityError:
             self.db.rollback()
@@ -114,8 +136,30 @@ class EvidenceService:
         self,
         organization_id: UUID,
         evidence_id: UUID,
+        actor_user_id: UUID | None = None,
+        correlation_id: str | None = None,
     ) -> None:
         evidence = self.get_by_id(organization_id, evidence_id)
+
+        # Snapshot before delete - the row won't exist to read from
+        # once repository.delete() runs.
+        self.outbox.append(
+            organization_id=organization_id,
+            event_type="EvidenceUnlinked",
+            schema_version=1,
+            payload={
+                "evidence_id": str(evidence.id),
+                "document_version_id": str(evidence.document_version_id),
+                "product_id": str(evidence.product_id),
+                "requirement_version_id": (
+                    str(evidence.requirement_version_id)
+                    if evidence.requirement_version_id else None
+                ),
+                "notes": evidence.notes,
+            },
+            actor_user_id=actor_user_id,
+            correlation_id=correlation_id,
+        )
 
         self.repository.delete(evidence)
         self.db.commit()

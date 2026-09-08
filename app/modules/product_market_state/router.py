@@ -3,7 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_db_session
+from app.core.dependencies import get_correlation_id, get_db_session
 from app.modules.rbac.dependencies import (
     require_admin,
     require_manager,
@@ -82,6 +82,14 @@ def update_product_market_state(
     state_id: UUID,
     payload: ProductMarketStateUpdate,
     current_user: User = Depends(require_admin),
+    correlation_id: str = Depends(get_correlation_id),
     service: ProductMarketStateService = Depends(get_product_market_state_service),
 ):
-    return service.update(current_user.organization_id, product_id, state_id, payload)
+    return service.update(
+        current_user.organization_id,
+        product_id,
+        state_id,
+        payload,
+        actor_user_id=current_user.id,
+        correlation_id=correlation_id,
+    )

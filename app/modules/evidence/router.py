@@ -3,7 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_db_session
+from app.core.dependencies import get_correlation_id, get_db_session
 from app.modules.rbac.dependencies import require_manager
 from app.modules.user.models import User
 
@@ -53,12 +53,14 @@ def get_evidence_by_id(
 def create_evidence(
     payload: EvidenceCreate,
     current_user: User = Depends(require_manager),
+    correlation_id: str = Depends(get_correlation_id),
     service: EvidenceService = Depends(get_evidence_service),
 ):
     return service.create(
         current_user.organization_id,
         payload,
         actor_user_id=current_user.id,
+        correlation_id=correlation_id,
     )
 
 
@@ -68,9 +70,15 @@ def create_evidence(
 def delete_evidence(
     evidence_id: UUID,
     current_user: User = Depends(require_manager),
+    correlation_id: str = Depends(get_correlation_id),
     service: EvidenceService = Depends(get_evidence_service),
 ):
-    service.delete(current_user.organization_id, evidence_id)
+    service.delete(
+        current_user.organization_id,
+        evidence_id,
+        actor_user_id=current_user.id,
+        correlation_id=correlation_id,
+    )
 
     return {
         "message": "Evidence deleted successfully."

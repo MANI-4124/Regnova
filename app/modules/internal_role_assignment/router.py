@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_db_session
+from app.core.dependencies import get_correlation_id, get_db_session
 from app.modules.rbac.dependencies import require_admin, require_ceo
 from app.modules.user.models import User
 
@@ -65,6 +65,7 @@ def propose_internal_role_assignment(
     # requires the proposer to be tenant-zero staff, which require_admin
     # alone does not guarantee (any org's admin passes it).
     current_user: User = Depends(require_admin),
+    correlation_id: str = Depends(get_correlation_id),
     service: InternalRoleAssignmentService = Depends(get_internal_role_assignment_service),
 ):
     return service.propose(
@@ -73,6 +74,7 @@ def propose_internal_role_assignment(
         scope=payload.scope,
         proposed_by_user_id=current_user.id,
         rationale=payload.rationale,
+        correlation_id=correlation_id,
     )
 
 
@@ -84,6 +86,7 @@ def decide_internal_role_assignment(
     assignment_id: UUID,
     payload: InternalRoleAssignmentDecide,
     current_user: User = Depends(require_ceo),
+    correlation_id: str = Depends(get_correlation_id),
     service: InternalRoleAssignmentService = Depends(get_internal_role_assignment_service),
 ):
     return service.decide(
@@ -91,6 +94,7 @@ def decide_internal_role_assignment(
         approver_user_id=current_user.id,
         approve=payload.approve,
         decision_rationale=payload.decision_rationale,
+        correlation_id=correlation_id,
     )
 
 
@@ -102,12 +106,14 @@ def propose_internal_role_assignment_revocation(
     assignment_id: UUID,
     payload: InternalRoleAssignmentProposeRevocation,
     current_user: User = Depends(require_admin),
+    correlation_id: str = Depends(get_correlation_id),
     service: InternalRoleAssignmentService = Depends(get_internal_role_assignment_service),
 ):
     return service.propose_revocation(
         assignment_id=assignment_id,
         proposed_by_user_id=current_user.id,
         rationale=payload.rationale,
+        correlation_id=correlation_id,
     )
 
 
@@ -119,6 +125,7 @@ def decide_internal_role_assignment_revocation(
     assignment_id: UUID,
     payload: InternalRoleAssignmentDecideRevocation,
     current_user: User = Depends(require_ceo),
+    correlation_id: str = Depends(get_correlation_id),
     service: InternalRoleAssignmentService = Depends(get_internal_role_assignment_service),
 ):
     return service.decide_revocation(
@@ -126,6 +133,7 @@ def decide_internal_role_assignment_revocation(
         approver_user_id=current_user.id,
         approve=payload.approve,
         decision_rationale=payload.decision_rationale,
+        correlation_id=correlation_id,
     )
 
 
@@ -137,10 +145,12 @@ def revoke_internal_role_assignment(
     assignment_id: UUID,
     payload: InternalRoleAssignmentRevoke,
     current_user: User = Depends(require_ceo),
+    correlation_id: str = Depends(get_correlation_id),
     service: InternalRoleAssignmentService = Depends(get_internal_role_assignment_service),
 ):
     return service.revoke(
         assignment_id=assignment_id,
         actor_user_id=current_user.id,
         reason=payload.reason,
+        correlation_id=correlation_id,
     )

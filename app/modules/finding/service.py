@@ -150,6 +150,7 @@ class FindingService:
         rationale: str,
         normalized_value: str | None = None,
         observed_location: dict[str, Any] | None = None,
+        correlation_id: str | None = None,
     ) -> Finding | None:
         """
         Idempotent re-proposal: the same (product_market_state,
@@ -160,6 +161,15 @@ class FindingService:
         revision is written, and this returns None. If it's still
         PROPOSED (never reviewed), a fresh revision is appended so the
         latest evidence is current.
+
+        Publishes FindingProposed whenever a revision is actually
+        written (both the new-Finding and the reused-still-PROPOSED
+        branches) - not on the early-return no-op above, which
+        correctly produces no event. No actor_user_id: this is an
+        engine-only action, no human actor exists at this call site
+        (see FindingRevision's own lack of a human-lineage field for
+        engine-driven revisions). The caller (AssessmentRunService)
+        commits - propose() itself never has, and still doesn't.
         """
 
         existing = self.findings.find_open_match(
@@ -202,6 +212,30 @@ class FindingService:
             rationale=rationale,
         )
         self.revisions.create(revision)
+
+        self.outbox.append(
+            organization_id=organization_id,
+            event_type="FindingProposed",
+            schema_version=1,
+            payload={
+                "finding_id": str(finding.id),
+                "product_market_state_id": str(product_market_state_id),
+                "dimension": dimension,
+                "subject_key": subject_key,
+                "assessment_run_id": str(assessment_run_id),
+                "requirement_version_id": (
+                    str(requirement_version_id) if requirement_version_id else None
+                ),
+                "rule_version_id": str(rule_version_id) if rule_version_id else None,
+                "severity": severity,
+                "hard_gate_effect": hard_gate_effect,
+                "issue_type": issue_type,
+                "observed_value": observed_value,
+                "observed_location": observed_location,
+                "rationale": rationale,
+            },
+            correlation_id=correlation_id,
+        )
 
         return finding
 

@@ -8,6 +8,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.modules.audit.repository import OutboxRepository
 from app.modules.organization.repository import OrganizationRepository
 from app.modules.user.exceptions import UserNotFound
 from app.modules.user.models import User
@@ -42,6 +43,48 @@ class InternalRoleAssignmentService:
         self.repository = InternalRoleAssignmentRepository(db)
         self.users = UserRepository(db)
         self.organizations = OrganizationRepository(db)
+        self.outbox = OutboxRepository(db)
+
+    def _publish_changed(
+        self,
+        assignment: InternalRoleAssignment,
+        *,
+        action: str,
+        from_status: str | None,
+        to_status: str,
+        actor_user_id: UUID,
+        rationale: str | None,
+        correlation_id: str | None,
+    ) -> None:
+        """
+        One parameterized event for all 5 write methods - see CLAUDE.md
+        "Internal role model" for why action/from_status/to_status live
+        in the payload rather than 5 separate event names, and "Audit
+        log" for the TECHNICAL_SECURITY tier decision. Same tenant-zero
+        organization_id fix as RegulatoryBasisActivated/
+        ContentVersionTransitioned - InternalRoleAssignment has no
+        organization of its own (its user_id always belongs to
+        tenant-zero per _require_internal_user).
+        """
+        internal_org = self._get_tenant_zero_or_error()
+
+        self.outbox.append(
+            organization_id=internal_org.id,
+            event_type="InternalRoleAssignmentChanged",
+            schema_version=1,
+            payload={
+                "assignment_id": str(assignment.id),
+                "user_id": str(assignment.user_id),
+                "role_code": assignment.role_code,
+                "scope": assignment.scope,
+                "action": action,
+                "from_status": from_status,
+                "to_status": to_status,
+                "rationale": rationale,
+            },
+            actor_user_id=actor_user_id,
+            correlation_id=correlation_id,
+        )
 
     def _get_tenant_zero_or_error(self):
         organization = self.organizations.get_internal()
@@ -90,6 +133,7 @@ class InternalRoleAssignmentService:
         scope: list[Any] | None,
         proposed_by_user_id: UUID,
         rationale: str,
+        correlation_id: str | None = None,
     ) -> InternalRoleAssignment:
         # The proposer must themselves be tenant-zero staff - "HR" is an
         # internal function, not something a customer-org admin can
@@ -119,6 +163,17 @@ class InternalRoleAssignmentService:
             content_hash=self._compute_content_hash(user_id, role_code, scope),
         )
         self.repository.create(assignment)
+
+        self._publish_changed(
+            assignment,
+            action="propose",
+            from_status=None,
+            to_status=assignment.status,
+            actor_user_id=proposed_by_user_id,
+            rationale=rationale,
+            correlation_id=correlation_id,
+        )
+
         self.db.commit()
 
         return assignment
@@ -130,8 +185,10 @@ class InternalRoleAssignmentService:
         approver_user_id: UUID,
         approve: bool,
         decision_rationale: str | None,
+        correlation_id: str | None = None,
     ) -> InternalRoleAssignment:
         assignment = self.get_by_id(assignment_id)
+        from_status = assignment.status
 
         if assignment.status != InternalRoleAssignmentStatus.PROPOSED.value:
             raise AssignmentNotPending(assignment.status)
@@ -147,6 +204,17 @@ class InternalRoleAssignmentService:
             assignment.status = InternalRoleAssignmentStatus.REJECTED.value
 
         self.repository.update(assignment)
+
+        self._publish_changed(
+            assignment,
+            action="decide",
+            from_status=from_status,
+            to_status=assignment.status,
+            actor_user_id=approver_user_id,
+            rationale=decision_rationale,
+            correlation_id=correlation_id,
+        )
+
         self.db.commit()
 
         return assignment
@@ -177,6 +245,7 @@ class InternalRoleAssignmentService:
         assignment_id: UUID,
         proposed_by_user_id: UUID,
         rationale: str,
+        correlation_id: str | None = None,
     ) -> InternalRoleAssignment:
         assignment = self.get_by_id(assignment_id)
         self._require_internal_user(proposed_by_user_id)
@@ -194,6 +263,17 @@ class InternalRoleAssignmentService:
         # existing access" principle as a scope-change proposal.
 
         self.repository.update(assignment)
+
+        self._publish_changed(
+            assignment,
+            action="propose_revocation",
+            from_status=assignment.status,
+            to_status=assignment.status,
+            actor_user_id=proposed_by_user_id,
+            rationale=rationale,
+            correlation_id=correlation_id,
+        )
+
         self.db.commit()
 
         return assignment
@@ -205,8 +285,10 @@ class InternalRoleAssignmentService:
         approver_user_id: UUID,
         approve: bool,
         decision_rationale: str | None,
+        correlation_id: str | None = None,
     ) -> InternalRoleAssignment:
         assignment = self.get_by_id(assignment_id)
+        from_status = assignment.status
 
         if assignment.revocation_proposed_at is None:
             raise NoRevocationPending()
@@ -222,6 +304,17 @@ class InternalRoleAssignmentService:
             assignment.revocation_rationale = None
 
         self.repository.update(assignment)
+
+        self._publish_changed(
+            assignment,
+            action="decide_revocation",
+            from_status=from_status,
+            to_status=assignment.status,
+            actor_user_id=approver_user_id,
+            rationale=decision_rationale,
+            correlation_id=correlation_id,
+        )
+
         self.db.commit()
 
         return assignment
@@ -232,6 +325,7 @@ class InternalRoleAssignmentService:
         assignment_id: UUID,
         actor_user_id: UUID,
         reason: str,
+        correlation_id: str | None = None,
     ) -> InternalRoleAssignment:
         """
         CEO-only unilateral revocation (require_ceo gates this at the
@@ -241,6 +335,7 @@ class InternalRoleAssignmentService:
         """
 
         assignment = self.get_by_id(assignment_id)
+        from_status = assignment.status
 
         if assignment.status != InternalRoleAssignmentStatus.APPROVED.value:
             raise AssignmentNotActive(assignment.status)
@@ -251,6 +346,17 @@ class InternalRoleAssignmentService:
         assignment.revocation_reason = reason
 
         self.repository.update(assignment)
+
+        self._publish_changed(
+            assignment,
+            action="revoke",
+            from_status=from_status,
+            to_status=assignment.status,
+            actor_user_id=actor_user_id,
+            rationale=reason,
+            correlation_id=correlation_id,
+        )
+
         self.db.commit()
 
         return assignment

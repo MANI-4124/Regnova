@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.modules.audit.repository import OutboxRepository
 from app.modules.product.exceptions import ProductNotFound
 from app.modules.product.repository import ProductRepository
 from app.modules.product_version.exceptions import ProductVersionNotFound
@@ -42,6 +43,7 @@ class ProductMarketStateService:
         self.product_versions = ProductVersionRepository(db)
         self.releases = RegulatoryBasisReleaseRepository(db)
         self.state_snapshots = StateSnapshotRepository(db)
+        self.outbox = OutboxRepository(db)
 
     def _get_product_or_404(self, organization_id: UUID, product_id: UUID):
         product = self.products.get_by_id(organization_id, product_id)
@@ -169,6 +171,8 @@ class ProductMarketStateService:
         product_id: UUID,
         state_id: UUID,
         payload: ProductMarketStateUpdate,
+        actor_user_id: UUID | None = None,
+        correlation_id: str | None = None,
     ) -> ProductMarketState:
         state = self.get_by_id(organization_id, product_id, state_id)
 
@@ -209,6 +213,28 @@ class ProductMarketStateService:
                 current_snapshot.is_current = False
                 current_snapshot.stale_reason = "PRODUCT_MARKET_STATE_PIN_CHANGED"
                 self.state_snapshots.update(current_snapshot)
+
+                # C14's "prior becomes stale" half of StateCurrentChanged
+                # - the OTHER half a new snapshot itself becoming current
+                # fires from MarketReadinessService._build_snapshot, a
+                # different module entirely. This is a real, distinct
+                # trigger: a pin change can go stale with no replacement
+                # snapshot existing yet, so new_snapshot_id is null here,
+                # unlike the _build_snapshot emission.
+                self.outbox.append(
+                    organization_id=organization_id,
+                    event_type="StateCurrentChanged",
+                    schema_version=1,
+                    payload={
+                        "product_market_state_id": str(state.id),
+                        "new_snapshot_id": None,
+                        "previous_snapshot_id": str(current_snapshot.id),
+                        "stale_reason": "PRODUCT_MARKET_STATE_PIN_CHANGED",
+                        "overall_gate": None,
+                    },
+                    actor_user_id=actor_user_id,
+                    correlation_id=correlation_id,
+                )
 
         try:
             self.repository.update(state)

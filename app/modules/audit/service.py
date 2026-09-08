@@ -102,6 +102,13 @@ def _build_finding_proposed(db: Session, event) -> AuditEventDraft:
             "severity": payload.get("severity"),
             "hard_gate_effect": payload.get("hard_gate_effect"),
             "status": "PROPOSED",
+            # Lineage - FR-14's own "reconstructing the inputs, rules
+            # and evidence behind a state snapshot" story. All three
+            # already travel with propose()'s own params, no new
+            # plumbing needed to surface them here.
+            "assessment_run_id": payload.get("assessment_run_id"),
+            "requirement_version_id": payload.get("requirement_version_id"),
+            "rule_version_id": payload.get("rule_version_id"),
         },
         internal_payload={
             "issue_type": payload.get("issue_type"),
@@ -151,6 +158,103 @@ def _build_document_customer_visible(db: Session, event) -> AuditEventDraft:
     )
 
 
+def _build_evidence_customer_visible(db: Session, event) -> AuditEventDraft:
+    """
+    Shared by EvidenceLinked/EvidenceUnlinked - same reasoning as
+    _build_document_customer_visible: Evidence is organization-scoped
+    customer data (a link row over the customer's own document and
+    product/requirement), no internal-actor authority to carve a split
+    around. product_id/requirement_version_id/notes travel verbatim,
+    same precedent as DocumentFieldRevised carrying its field value
+    verbatim.
+    """
+    payload = event.payload or {}
+
+    return AuditEventDraft(
+        visibility_tier=AuditVisibilityTier.CUSTOMER_VISIBLE.value,
+        payload=dict(payload),
+        product_id=UUID(payload["product_id"]) if payload.get("product_id") else None,
+    )
+
+
+def _build_regulatory_basis_activated(db: Session, event) -> AuditEventDraft:
+    """
+    INTERNAL_REGULATORY, no split - same tier as ContentVersionTransitioned
+    and for the same reason: RegulatoryBasisRelease has no organization
+    of its own (OutboxRepository.append is called with the tenant-zero
+    org id - see RegulatoryBasisReleaseService), so there's no customer
+    to carve a CUSTOMER_VISIBLE half out for. C14's own minimum payload
+    ("release/old-new/effective time") travels through unsplit.
+    """
+    return AuditEventDraft(
+        visibility_tier=AuditVisibilityTier.INTERNAL_REGULATORY.value,
+        payload=dict(event.payload or {}),
+    )
+
+
+def _build_assessment_completed(db: Session, event) -> AuditEventDraft:
+    """
+    CUSTOMER_VISIBLE, no split - a customer's own product reaching a
+    new readiness state is squarely their own data, same reasoning as
+    FindingDecisionChanged. product_id resolved the same way
+    FindingProposed's is - AssessmentCompleted's payload carries
+    product_market_state_id but not product_id directly.
+    """
+    payload = event.payload or {}
+    product_id, product_market_state_id = _resolve_product_market_state_scope(
+        db, event.organization_id, payload,
+    )
+
+    return AuditEventDraft(
+        visibility_tier=AuditVisibilityTier.CUSTOMER_VISIBLE.value,
+        payload=dict(payload),
+        product_id=product_id,
+        product_market_state_id=product_market_state_id,
+    )
+
+
+def _build_state_current_changed(db: Session, event) -> AuditEventDraft:
+    """
+    CUSTOMER_VISIBLE, no split - same reasoning as AssessmentCompleted.
+    Fires from two distinct sites (MarketReadinessService._build_snapshot,
+    a new snapshot becoming current; ProductMarketStateService.update,
+    the current snapshot going stale with no replacement yet) - see
+    CLAUDE.md "Market readiness" for why both are C14's single
+    "New snapshot becomes current or prior becomes stale" definition,
+    not two different events.
+    """
+    payload = event.payload or {}
+    product_id, product_market_state_id = _resolve_product_market_state_scope(
+        db, event.organization_id, payload,
+    )
+
+    return AuditEventDraft(
+        visibility_tier=AuditVisibilityTier.CUSTOMER_VISIBLE.value,
+        payload=dict(payload),
+        product_id=product_id,
+        product_market_state_id=product_market_state_id,
+    )
+
+
+def _build_internal_role_assignment_changed(db: Session, event) -> AuditEventDraft:
+    """
+    TECHNICAL_SECURITY, no split - the most audit-critical surface in
+    this codebase (who gains/loses regulatory or assessment authority),
+    but a governance/access-control concern, not a regulatory-content or
+    assessment decision: INTERNAL_REGULATORY holders (RA/Senior/
+    Knowledge Lead/Content Advisor) have no natural need to see who else
+    was granted a role, and this sidesteps the awkward question of
+    whether one advisor should see another's own grant. Only Platform
+    Admin/Auditor ever see this event at all, so there's no lower tier
+    to protect a split from - the whole payload is already
+    access-restricted by tier alone.
+    """
+    return AuditEventDraft(
+        visibility_tier=AuditVisibilityTier.TECHNICAL_SECURITY.value,
+        payload=dict(event.payload or {}),
+    )
+
+
 # event_type -> builder(db, OutboxEvent) -> AuditEventDraft. The
 # extensibility point for tier/redaction assignment - a new event_type
 # becomes properly classified by registering a builder here, not by
@@ -164,6 +268,12 @@ AUDIT_BUILDERS: dict[str, Callable[[Session, Any], AuditEventDraft]] = {
     "DocumentVersionRejected": _build_document_customer_visible,
     "DocumentVersionQuarantined": _build_document_customer_visible,
     "DocumentFieldRevised": _build_document_customer_visible,
+    "EvidenceLinked": _build_evidence_customer_visible,
+    "EvidenceUnlinked": _build_evidence_customer_visible,
+    "RegulatoryBasisActivated": _build_regulatory_basis_activated,
+    "AssessmentCompleted": _build_assessment_completed,
+    "StateCurrentChanged": _build_state_current_changed,
+    "InternalRoleAssignmentChanged": _build_internal_role_assignment_changed,
 }
 
 

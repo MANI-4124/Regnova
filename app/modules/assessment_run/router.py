@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_db_session
+from app.core.dependencies import get_correlation_id, get_db_session
 from app.modules.rbac.dependencies import require_admin, require_manager
 from app.modules.user.models import User
 
@@ -70,6 +70,7 @@ def get_assessment_run(
 def create_assessment_run(
     payload: AssessmentRunCreate,
     current_user: User = Depends(require_admin),
+    correlation_id: str = Depends(get_correlation_id),
     service: AssessmentRunService = Depends(get_assessment_run_service),
 ):
     return service.create_and_run(
@@ -77,4 +78,5 @@ def create_assessment_run(
         payload.product_market_state_id,
         payload,
         actor_user_id=current_user.id,
+        correlation_id=correlation_id,
     )

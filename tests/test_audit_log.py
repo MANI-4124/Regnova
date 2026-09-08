@@ -666,3 +666,558 @@ def test_organization_without_audit_history_can_still_be_deleted(client, tenant_
         headers=tenant_a["headers"],
     )
     assert response.status_code == 204
+
+
+# =====================================================================
+# Second pass: RegulatoryBasisActivated, AssessmentCompleted,
+# StateCurrentChanged, FindingProposed wiring, InternalRoleAssignmentChanged,
+# EvidenceLinked/EvidenceUnlinked.
+# =====================================================================
+
+
+def _submit_verify_activate_ar(client, writer, path):
+    response = client.post(f"{path}/submit-for-review", headers=writer["headers"])
+    assert response.status_code == 200, response.text
+
+    response = client.post(
+        f"{path}/verify", json={"rationale": "Verified against primary text."}, headers=writer["headers"],
+    )
+    assert response.status_code == 200, response.text
+
+    response = client.post(
+        f"{path}/activate", json={"rationale": "Approved for release inclusion."}, headers=writer["headers"],
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _create_requirement_version_ar(client, writer, **overrides):
+    requirement = client.post("/requirements", json={}, headers=writer["headers"]).json()
+
+    payload = {
+        "jurisdiction": "Malaysia",
+        "market": "Malaysia",
+        "authority": "NPRA",
+        "category": "Claims",
+        "dimension": "CLAIMS",
+        "obligation_type": "PROHIBITED_THERAPEUTIC_CLAIM",
+        "canonical_statement": "Claims must not be therapeutic.",
+        "default_severity": "MAJOR",
+        "is_hard_gate": True,
+        "authority_interpretation_label": "AUTHORITY_REQUIREMENT",
+    }
+    payload.update(overrides)
+
+    response = client.post(
+        f"/requirements/{requirement['id']}/versions", json=payload, headers=writer["headers"],
+    )
+    assert response.status_code == 200, response.text
+    return requirement, response.json()
+
+
+def _activate_requirement_version_ar(client, writer, requirement, version):
+    return _submit_verify_activate_ar(
+        client, writer, f"/requirements/{requirement['id']}/versions/{version['id']}",
+    )
+
+
+def _create_rule_version_ar(client, writer, requirement_version_id, **overrides):
+    rule = client.post("/rules", json={}, headers=writer["headers"]).json()
+
+    payload = {
+        "requirement_version_id": requirement_version_id,
+        "condition": {"op": "exists", "field": "wording"},
+        "output_type": "REQUIREMENT_RESULT",
+        "unknown_behavior": "HUMAN_REVIEW",
+    }
+    payload.update(overrides)
+
+    response = client.post(
+        f"/rules/{rule['id']}/versions", json=payload, headers=writer["headers"],
+    )
+    assert response.status_code == 200, response.text
+    return rule, response.json()
+
+
+def _activate_rule_version_ar(client, writer, rule, version):
+    return _submit_verify_activate_ar(client, writer, f"/rules/{rule['id']}/versions/{version['id']}")
+
+
+def _create_active_release_ar(
+    client, writer, rule_version_ids, requirement_version_ids, jurisdiction="Malaysia", category="Claims",
+):
+    source = client.post("/sources", headers=writer["headers"]).json()
+    source_version = client.post(
+        f"/sources/{source['id']}/versions",
+        json={
+            "title": "Test Source",
+            "issuing_authority": "Test Authority",
+            "jurisdiction": jurisdiction,
+            "tier": 1,
+            "source_type": "OFFICIAL_GUIDELINE",
+        },
+        headers=writer["headers"],
+    ).json()
+    activated_source = _submit_verify_activate_ar(
+        client, writer, f"/sources/{source['id']}/versions/{source_version['id']}",
+    )
+
+    response = client.post(
+        "/regulatory-basis-releases",
+        json={
+            "jurisdiction": jurisdiction,
+            "market": jurisdiction,
+            "category": category,
+            "source_version_ids": [activated_source["id"]],
+            "requirement_version_ids": requirement_version_ids,
+            "rule_version_ids": rule_version_ids,
+        },
+        headers=writer["headers"],
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _publish_version(client, tenant, product_id, version_id):
+    response = client.post(
+        f"/products/{product_id}/versions/{version_id}/publish", headers=tenant["headers"],
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _update_state(client, tenant, product_id, state_id, **payload):
+    response = client.put(
+        f"/products/{product_id}/market-states/{state_id}", json=payload, headers=tenant["headers"],
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _setup_ready_state_ar(
+    client, tenant, writer, *,
+    output_type="REQUIREMENT_RESULT",
+    condition=None,
+    jurisdiction="Malaysia",
+):
+    """
+    One CLAIMS requirement/rule, active release, published product
+    version, state - the minimal setup a real assessment run needs.
+    Parameterized on output_type/condition so the same shape serves
+    both the plain REQUIREMENT_RESULT case (AssessmentCompleted/
+    StateCurrentChanged) and a FINDING_PROPOSAL case (FindingProposed).
+    """
+    requirement, requirement_version = _create_requirement_version_ar(
+        client, writer, jurisdiction=jurisdiction, market=jurisdiction,
+    )
+    requirement_version = _activate_requirement_version_ar(client, writer, requirement, requirement_version)
+
+    rule, rule_version = _create_rule_version_ar(
+        client, writer, requirement_version["id"],
+        condition=condition or {"op": "exists", "field": "wording"},
+        output_type=output_type,
+    )
+    rule_version = _activate_rule_version_ar(client, writer, rule, rule_version)
+
+    _create_active_release_ar(
+        client, writer,
+        rule_version_ids=[rule_version["id"]],
+        requirement_version_ids=[requirement_version["id"]],
+        jurisdiction=jurisdiction,
+    )
+
+    product = _create_product(client, tenant)
+    version = _create_version(client, tenant, product["id"], category="Claims")
+    _publish_version(client, tenant, product["id"], version["id"])
+    state = _create_state(client, tenant, product["id"], version["id"], jurisdiction=jurisdiction)
+
+    return product, version, state, requirement_version, rule_version
+
+
+def _run_market_readiness_ar(client, tenant, state_id, input_facts=None):
+    return client.post(
+        "/market-readiness-runs",
+        json={"product_market_state_id": state_id, "input_facts": input_facts or {}},
+        headers=tenant["headers"],
+    )
+
+
+def _tenant_zero_role_user(db, role_code, label):
+    """
+    A tenant-zero User with an RBAC Role code (ADMIN/EMPLOYEE) - the
+    axis orthogonal to InternalRoleCode. Used to drive real HR (ADMIN,
+    satisfies require_admin on propose/revocation endpoints) and
+    plain propose-target staff via actual HTTP propose()/decide()/
+    revoke() calls, not the direct-ORM _grant_internal_role shortcut -
+    this suite needs the real write paths to exercise emission.
+    """
+    organization = _get_or_create_tenant_zero(db)
+
+    role = (
+        db.query(Role)
+        .filter(Role.organization_id == organization.id, Role.code == role_code)
+        .first()
+    )
+    if role is None:
+        role = Role(organization_id=organization.id, code=role_code, name=f"Internal {role_code}")
+        db.add(role)
+        db.flush()
+
+    user = User(
+        organization_id=organization.id,
+        role_id=role.id,
+        first_name="Internal",
+        last_name=label,
+        email=f"internal-{label.lower()}-{uuid.uuid4()}@example.com",
+        password_hash=hash_password("Password123!"),
+    )
+    db.add(user)
+    db.commit()
+
+    return {
+        "organization": organization,
+        "role": role,
+        "user": user,
+        "headers": _headers_for(user, organization.id, role.id),
+    }
+
+
+def _make_ceo(db, tenant):
+    tenant["user"].is_permanent_admin = True
+    db.add(tenant["user"])
+    db.commit()
+    return tenant
+
+
+def _propose_role(client, proposer, user_id, role_code, scope=None, rationale="test"):
+    response = client.post(
+        "/internal-role-assignments",
+        json={"user_id": str(user_id), "role_code": role_code, "scope": scope, "rationale": rationale},
+        headers=proposer["headers"],
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _decide_role(client, approver, assignment_id, approve, decision_rationale="ok"):
+    response = client.post(
+        f"/internal-role-assignments/{assignment_id}/decide",
+        json={"approve": approve, "decision_rationale": decision_rationale},
+        headers=approver["headers"],
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+# --- (1) RegulatoryBasisActivated ------------------------------------
+
+
+def test_regulatory_basis_activated_emitted_on_create(client, db, regulatory_content_writer):
+    source = client.post("/sources", headers=regulatory_content_writer["headers"]).json()
+    source_version = client.post(
+        f"/sources/{source['id']}/versions",
+        json={
+            "title": "Test Source", "issuing_authority": "Test Authority",
+            "jurisdiction": "Malaysia", "tier": 1, "source_type": "OFFICIAL_GUIDELINE",
+        },
+        headers=regulatory_content_writer["headers"],
+    ).json()
+    activated_source = _submit_verify_activate_ar(
+        client, regulatory_content_writer, f"/sources/{source['id']}/versions/{source_version['id']}",
+    )
+
+    response = client.post(
+        "/regulatory-basis-releases",
+        json={
+            "jurisdiction": "Malaysia", "market": "Malaysia", "category": "Ingredients",
+            "source_version_ids": [activated_source["id"]],
+        },
+        headers=regulatory_content_writer["headers"],
+    )
+    assert response.status_code == 200
+    release = response.json()
+
+    dispatch_pending_events(db)
+
+    internal_org = _get_or_create_tenant_zero(db)
+    events = AuditEventRepository(db).get_all(
+        organization_id=internal_org.id,
+        visibility_tiers=[AuditVisibilityTier.INTERNAL_REGULATORY.value],
+        event_type="RegulatoryBasisActivated",
+    )
+    assert len(events) == 1
+    assert events[0].payload["release_id"] == release["id"]
+    assert events[0].payload["previous_active_release_id"] is None
+    assert events[0].payload["jurisdiction"] == "Malaysia"
+    assert events[0].payload["category"] == "Ingredients"
+
+
+def test_regulatory_basis_activated_emitted_on_update_transition_to_active(client, db, regulatory_content_writer):
+    """
+    update() can set status=ACTIVE directly, bypassing create()'s own
+    conflict/supersession enforcement (a known, separately-logged gap)
+    - the audit trail must still fire for this path, not just the one
+    with real conflict checking.
+    """
+    response = client.post(
+        "/regulatory-basis-releases",
+        json={
+            "jurisdiction": "Malaysia", "market": "Malaysia", "category": "Testing",
+            "status": "ARCHIVED",
+        },
+        headers=regulatory_content_writer["headers"],
+    )
+    assert response.status_code == 200
+    release = response.json()
+    assert release["status"] == "ARCHIVED"
+
+    dispatch_pending_events(db)  # drain anything from create() - should be none, ARCHIVED never activates
+
+    update_resp = client.put(
+        f"/regulatory-basis-releases/{release['id']}",
+        json={"status": "ACTIVE"},
+        headers=regulatory_content_writer["headers"],
+    )
+    assert update_resp.status_code == 200
+    assert update_resp.json()["status"] == "ACTIVE"
+
+    dispatch_pending_events(db)
+
+    internal_org = _get_or_create_tenant_zero(db)
+    events = AuditEventRepository(db).get_all(
+        organization_id=internal_org.id,
+        visibility_tiers=[AuditVisibilityTier.INTERNAL_REGULATORY.value],
+        event_type="RegulatoryBasisActivated",
+    )
+    assert len(events) == 1
+    assert events[0].payload["release_id"] == release["id"]
+
+
+def test_regulatory_basis_activated_not_emitted_when_update_does_not_touch_status(
+    client, db, regulatory_content_writer,
+):
+    response = client.post(
+        "/regulatory-basis-releases",
+        json={"jurisdiction": "Malaysia", "market": "Malaysia", "category": "Documents"},
+        headers=regulatory_content_writer["headers"],
+    )
+    release = response.json()
+    dispatch_pending_events(db)
+
+    client.put(
+        f"/regulatory-basis-releases/{release['id']}",
+        json={"notes": "just a note update"},
+        headers=regulatory_content_writer["headers"],
+    )
+    dispatch_pending_events(db)
+
+    internal_org = _get_or_create_tenant_zero(db)
+    events = AuditEventRepository(db).get_all(
+        organization_id=internal_org.id,
+        visibility_tiers=[AuditVisibilityTier.INTERNAL_REGULATORY.value],
+        event_type="RegulatoryBasisActivated",
+    )
+    # Exactly one - from create() (status defaulted to ACTIVE there) -
+    # the notes-only update() must not fire a second one.
+    assert len(events) == 1
+
+
+# --- (2) AssessmentCompleted / StateCurrentChanged --------------------
+
+
+def test_assessment_completed_and_state_current_changed_emitted_on_market_readiness_run(
+    client, db, tenant_a, regulatory_content_writer,
+):
+    product, version, state, requirement_version, rule_version = _setup_ready_state_ar(
+        client, tenant_a, regulatory_content_writer,
+    )
+
+    response = _run_market_readiness_ar(
+        client, tenant_a, state["id"],
+        {"CLAIMS": {"product": {}, "claims": [{"claim_id": "c1", "wording": "clinically proven"}]}},
+    )
+    assert response.status_code == 200
+    snapshot = response.json()
+
+    dispatch_pending_events(db)
+
+    completed = client.get(
+        "/audit-events", params={"event_type": "AssessmentCompleted"}, headers=tenant_a["headers"],
+    ).json()
+    assert len(completed) == 1
+    assert completed[0]["payload"]["state_snapshot_id"] == snapshot["id"]
+    assert completed[0]["payload"]["product_market_state_id"] == state["id"]
+    assert completed[0]["visibility_tier"] == "CUSTOMER_VISIBLE"
+
+    current_changed = client.get(
+        "/audit-events", params={"event_type": "StateCurrentChanged"}, headers=tenant_a["headers"],
+    ).json()
+    assert len(current_changed) == 1
+    assert current_changed[0]["payload"]["new_snapshot_id"] == snapshot["id"]
+    assert current_changed[0]["payload"]["previous_snapshot_id"] is None
+
+
+def test_state_current_changed_emitted_on_product_market_state_pin_change(
+    client, db, tenant_a, regulatory_content_writer,
+):
+    """
+    C14's OTHER "StateCurrentChanged" trigger - a pin change marking the
+    current snapshot stale with no replacement snapshot existing yet,
+    fired from ProductMarketStateService.update() rather than
+    MarketReadinessService._build_snapshot.
+    """
+    product, version, state, requirement_version, rule_version = _setup_ready_state_ar(
+        client, tenant_a, regulatory_content_writer,
+    )
+
+    run_response = _run_market_readiness_ar(
+        client, tenant_a, state["id"],
+        {"CLAIMS": {"product": {}, "claims": [{"claim_id": "c1", "wording": "clinically proven"}]}},
+    )
+    assert run_response.status_code == 200
+    first_snapshot = run_response.json()
+    dispatch_pending_events(db)
+
+    second_version = _create_version(client, tenant_a, product["id"], version="2.0.0", category="Claims")
+    _publish_version(client, tenant_a, product["id"], second_version["id"])
+
+    _update_state(client, tenant_a, product["id"], state["id"], product_version_id=second_version["id"])
+    dispatch_pending_events(db)
+
+    events = client.get(
+        "/audit-events", params={"event_type": "StateCurrentChanged"}, headers=tenant_a["headers"],
+    ).json()
+
+    pin_change_events = [
+        e for e in events if e["payload"]["stale_reason"] == "PRODUCT_MARKET_STATE_PIN_CHANGED"
+    ]
+    assert len(pin_change_events) == 1
+    assert pin_change_events[0]["payload"]["new_snapshot_id"] is None
+    assert pin_change_events[0]["payload"]["previous_snapshot_id"] == first_snapshot["id"]
+
+
+# --- (3) FindingProposed wiring ---------------------------------------
+
+
+def test_finding_proposed_emitted_from_real_engine_run_with_lineage(
+    client, db, tenant_a, regulatory_content_writer,
+):
+    product, version, state, requirement_version, rule_version = _setup_ready_state_ar(
+        client, tenant_a, regulatory_content_writer,
+        output_type="FINDING_PROPOSAL",
+        condition={"op": "equals", "field": "wording", "value": "cures acne"},
+    )
+
+    response = _run_market_readiness_ar(
+        client, tenant_a, state["id"],
+        {"CLAIMS": {"product": {}, "claims": [{"claim_id": "c1", "wording": "cures acne"}]}},
+    )
+    assert response.status_code == 200
+
+    dispatch_pending_events(db)
+
+    events = client.get(
+        "/audit-events", params={"event_type": "FindingProposed"}, headers=tenant_a["headers"],
+    ).json()
+    assert len(events) == 1
+    payload = events[0]["payload"]
+    assert payload["requirement_version_id"] == requirement_version["id"]
+    assert payload["rule_version_id"] == rule_version["id"]
+    assert payload["assessment_run_id"] is not None
+    assert payload["status"] == "PROPOSED"
+    assert "internal_payload" not in events[0]  # customer schema never carries it at all
+
+
+# --- (4) InternalRoleAssignmentChanged ---------------------------------
+
+
+def test_internal_role_assignment_changed_emitted_for_propose_decide_and_revoke(client, db, tenant_a):
+    hr = _tenant_zero_role_user(db, "ADMIN", "Hr")
+    target = _tenant_zero_role_user(db, "EMPLOYEE", "Target")
+    ceo = _make_ceo(db, tenant_a)
+
+    assignment = _propose_role(client, hr, target["user"].id, "RA")
+    assignment = _decide_role(client, ceo, assignment["id"], approve=True)
+
+    revoke_resp = client.post(
+        f"/internal-role-assignments/{assignment['id']}/revoke",
+        json={"reason": "no longer needed"},
+        headers=ceo["headers"],
+    )
+    assert revoke_resp.status_code == 200
+
+    dispatch_pending_events(db)
+
+    internal_org = _get_or_create_tenant_zero(db)
+    events = AuditEventRepository(db).get_all(
+        organization_id=internal_org.id,
+        visibility_tiers=[AuditVisibilityTier.TECHNICAL_SECURITY.value],
+        event_type="InternalRoleAssignmentChanged",
+    )
+    assert len(events) == 3
+    actions = sorted(e.payload["action"] for e in events)
+    assert actions == ["decide", "propose", "revoke"]
+    assert all(e.internal_payload is None for e in events)  # single unsplit payload, no lower tier to protect
+
+
+def test_internal_role_assignment_changed_not_visible_at_internal_regulatory_tier(client, db, tenant_a):
+    """
+    Confirms the tier placement is real, not just labeled -
+    INTERNAL_REGULATORY holders (RA/Senior/Knowledge Lead/Content
+    Advisor) must not see who else was granted a role.
+    """
+    hr = _tenant_zero_role_user(db, "ADMIN", "Hr2")
+    target = _tenant_zero_role_user(db, "EMPLOYEE", "Target2")
+    ceo = _make_ceo(db, tenant_a)
+
+    assignment = _propose_role(client, hr, target["user"].id, "SENIOR_REVIEWER")
+    _decide_role(client, ceo, assignment["id"], approve=True)
+    dispatch_pending_events(db)
+
+    internal_org = _get_or_create_tenant_zero(db)
+    events = AuditEventRepository(db).get_all(
+        organization_id=internal_org.id,
+        visibility_tiers=[AuditVisibilityTier.INTERNAL_REGULATORY.value],
+        event_type="InternalRoleAssignmentChanged",
+    )
+    assert events == []
+
+
+# --- (5) EvidenceLinked / EvidenceUnlinked -----------------------------
+
+
+def test_evidence_linked_and_unlinked_emitted(client, db, tenant_a, storage):
+    product = _create_product(client, tenant_a)
+    document = _create_document(client, tenant_a)
+    version = _upload_document_version(client, tenant_a, document["id"])
+    version = _verify_document_version(client, tenant_a, document["id"], version["id"])
+
+    create_resp = client.post(
+        "/evidence",
+        json={
+            "document_version_id": version["id"],
+            "product_id": product["id"],
+            "notes": "Linked for review.",
+        },
+        headers=tenant_a["headers"],
+    )
+    assert create_resp.status_code == 200
+    evidence = create_resp.json()
+
+    delete_resp = client.delete(f"/evidence/{evidence['id']}", headers=tenant_a["headers"])
+    assert delete_resp.status_code == 200
+
+    dispatch_pending_events(db)
+
+    linked = client.get(
+        "/audit-events", params={"event_type": "EvidenceLinked"}, headers=tenant_a["headers"],
+    ).json()
+    unlinked = client.get(
+        "/audit-events", params={"event_type": "EvidenceUnlinked"}, headers=tenant_a["headers"],
+    ).json()
+    assert len(linked) == 1
+    assert len(unlinked) == 1
+    assert linked[0]["payload"]["evidence_id"] == evidence["id"]
+    assert linked[0]["payload"]["notes"] == "Linked for review."
+    assert unlinked[0]["payload"]["evidence_id"] == evidence["id"]
+    assert linked[0]["visibility_tier"] == "CUSTOMER_VISIBLE"

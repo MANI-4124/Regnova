@@ -8,6 +8,8 @@ from uuid import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.modules.audit.repository import OutboxRepository
+from app.modules.organization.repository import OrganizationRepository
 from app.modules.requirement_version.exceptions import RequirementVersionNotFound
 from app.modules.requirement_version.models import RequirementVersionStatus
 from app.modules.requirement_version.repository import RequirementVersionRepository
@@ -60,6 +62,50 @@ class RegulatoryBasisReleaseService:
         self.source_versions = SourceVersionRepository(db)
         self.requirement_versions = RequirementVersionRepository(db)
         self.rule_versions = RuleVersionRepository(db)
+        self.organizations = OrganizationRepository(db)
+        self.outbox = OutboxRepository(db)
+
+    def _publish_activated(
+        self,
+        release: RegulatoryBasisRelease,
+        *,
+        previous_active_release_id,
+        actor_user_id,
+        correlation_id: str | None,
+    ) -> None:
+        """
+        RegulatoryBasisRelease has no organization_id of its own - same
+        problem ContentVersionTransitioned already solved (see CLAUDE.md
+        "Regulatory content approval workflow"). Reuses the exact same
+        fix: tenant-zero's own Organization id, silently skipped if
+        tenant-zero doesn't exist yet in this environment (regulatory-
+        content writes must not fail over notification plumbing).
+        """
+        internal_org = self.organizations.get_internal()
+        if internal_org is None:
+            return
+
+        self.outbox.append(
+            organization_id=internal_org.id,
+            event_type="RegulatoryBasisActivated",
+            schema_version=1,
+            payload={
+                "release_id": str(release.id),
+                "jurisdiction": release.jurisdiction,
+                "category": release.category,
+                "previous_active_release_id": (
+                    str(previous_active_release_id) if previous_active_release_id else None
+                ),
+                "effective_from": (
+                    release.effective_from.isoformat() if release.effective_from else None
+                ),
+                "effective_to": (
+                    release.effective_to.isoformat() if release.effective_to else None
+                ),
+            },
+            actor_user_id=actor_user_id,
+            correlation_id=correlation_id,
+        )
 
     def _resolve_eligible_source_versions(self, ids: list[UUID]):
         versions = []
@@ -163,6 +209,8 @@ class RegulatoryBasisReleaseService:
     def create(
         self,
         payload: RegulatoryBasisReleaseCreate,
+        actor_user_id: UUID | None = None,
+        correlation_id: str | None = None,
     ) -> RegulatoryBasisRelease:
         source_versions = self._resolve_eligible_source_versions(
             payload.source_version_ids or [],
@@ -230,6 +278,14 @@ class RegulatoryBasisReleaseService:
                 existing_active.retired_at = datetime.now(timezone.utc)
                 self.repository.update(existing_active)
 
+            if status == RegulatoryBasisReleaseStatus.ACTIVE.value:
+                self._publish_activated(
+                    release,
+                    previous_active_release_id=existing_active.id if existing_active else None,
+                    actor_user_id=actor_user_id,
+                    correlation_id=correlation_id,
+                )
+
             self.db.commit()
         except IntegrityError:
             self.db.rollback()
@@ -241,13 +297,43 @@ class RegulatoryBasisReleaseService:
         self,
         release_id: UUID,
         payload: RegulatoryBasisReleaseUpdate,
+        actor_user_id: UUID | None = None,
+        correlation_id: str | None = None,
     ) -> RegulatoryBasisRelease:
         release = self.get_by_id(release_id)
+        from_status = release.status
 
         data = payload.model_dump(exclude_unset=True)
 
         for field, value in data.items():
             setattr(release, field, value)
+
+        # A known, separately-logged gap (see CLAUDE.md "Known
+        # limitations"): update() can set status=ACTIVE directly,
+        # bypassing create()'s own active-conflict/supersession
+        # enforcement entirely - not fixed here, but the audit trail
+        # must still be honest about every path that CAN reach ACTIVE,
+        # not just the one with real conflict checking. previous_active
+        # is looked up read-only, for the event payload only - update()
+        # still does not supersede/flip anything the way create() does.
+        newly_activated = (
+            from_status != RegulatoryBasisReleaseStatus.ACTIVE.value
+            and release.status == RegulatoryBasisReleaseStatus.ACTIVE.value
+        )
+        if newly_activated:
+            previous_active = self.repository.get_active_for_jurisdiction_and_category(
+                release.jurisdiction, release.category,
+            )
+            self._publish_activated(
+                release,
+                previous_active_release_id=(
+                    previous_active.id
+                    if previous_active and previous_active.id != release.id
+                    else None
+                ),
+                actor_user_id=actor_user_id,
+                correlation_id=correlation_id,
+            )
 
         self.repository.update(release)
         self.db.commit()

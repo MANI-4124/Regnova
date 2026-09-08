@@ -143,6 +143,7 @@ class AssessmentRunService:
         product_market_state_id: UUID,
         payload: AssessmentRunCreate,
         actor_user_id: UUID | None = None,
+        correlation_id: str | None = None,
     ) -> AssessmentRun:
         state = self._get_state_or_404(organization_id, product_market_state_id)
 
@@ -167,7 +168,10 @@ class AssessmentRunService:
 
         try:
             for dimension in payload.dimensions:
-                self._run_dimension(run, dimension, payload.input_facts.get(dimension, {}))
+                self._run_dimension(
+                    run, dimension, payload.input_facts.get(dimension, {}),
+                    correlation_id=correlation_id,
+                )
             run.status = AssessmentRunStatus.COMPLETED.value
         except Exception as exc:  # noqa: BLE001
             # Deliberately broad: a run-level failure must still leave a
@@ -187,6 +191,7 @@ class AssessmentRunService:
         run: AssessmentRun,
         dimension: str,
         dimension_facts: dict[str, Any],
+        correlation_id: str | None = None,
     ) -> None:
         """
         Public entrypoint for orchestrators (MarketReadinessService) that
@@ -206,13 +211,14 @@ class AssessmentRunService:
         DimensionAssessmentState.NO_SUBJECTS_RESOLVED in `_run_dimension`.
         """
 
-        self._run_dimension(run, dimension, dimension_facts)
+        self._run_dimension(run, dimension, dimension_facts, correlation_id=correlation_id)
 
     def _run_dimension(
         self,
         run: AssessmentRun,
         dimension: str,
         dimension_facts: dict[str, Any],
+        correlation_id: str | None = None,
     ) -> None:
         release = self.releases.get_by_id(run.regulatory_basis_release_id)
         rule_versions = self.rule_versions.get_verified_active_for_dimension(
@@ -225,7 +231,10 @@ class AssessmentRunService:
             assembled = self._assemble_documents_dimension_facts(
                 run.organization_id, product_id, dimension_facts, rule_versions, run.started_at,
             )
-            self._run_documents_dimension(run, dimension_facts, rule_versions, assembled)
+            self._run_documents_dimension(
+                run, dimension_facts, rule_versions, assembled,
+                correlation_id=correlation_id,
+            )
             state = self._derive_dimension_state(
                 run.id, dimension, run.organization_id, run.product_market_state_id,
             )
@@ -238,6 +247,7 @@ class AssessmentRunService:
         else:
             resolved_subject_count = self._run_subject_list_dimension(
                 run, dimension, dimension_facts, rule_versions,
+                correlation_id=correlation_id,
             )
             if rule_versions and resolved_subject_count == 0:
                 # Active rules exist for this dimension, but nothing
@@ -301,6 +311,7 @@ class AssessmentRunService:
         dimension: str,
         dimension_facts: dict[str, Any],
         rule_versions: list,
+        correlation_id: str | None = None,
     ) -> int:
         """
         Claims/Label shape: the caller enumerates the complete subject
@@ -348,7 +359,10 @@ class AssessmentRunService:
             subject_facts = {"product": product_facts, **subject}
 
             for rule_version in rule_versions:
-                self._run_step(run, dimension, rule_version, subject_key, subject_facts)
+                self._run_step(
+                    run, dimension, rule_version, subject_key, subject_facts,
+                    correlation_id=correlation_id,
+                )
 
         return len(subjects)
 
@@ -358,6 +372,7 @@ class AssessmentRunService:
         dimension_facts: dict[str, Any],
         rule_versions: list,
         assembled: dict[str, Any] | None = None,
+        correlation_id: str | None = None,
     ) -> None:
         """
         Documents' checklist is regulatory-basis-driven, not
@@ -413,7 +428,10 @@ class AssessmentRunService:
                 for rule_version in document_rules:
                     if rule_version.requirement_version.obligation_type != document_type:
                         continue
-                    self._run_step(run, "DOCUMENTS", rule_version, subject_key, subject_facts)
+                    self._run_step(
+                        run, "DOCUMENTS", rule_version, subject_key, subject_facts,
+                        correlation_id=correlation_id,
+                    )
 
         for check in dimension_facts.get("consistency_checks", []):
             check_key = check.get("check_key")
@@ -423,7 +441,10 @@ class AssessmentRunService:
             }
 
             for rule_version in consistency_rules:
-                self._run_step(run, "DOCUMENTS", rule_version, check_key, subject_facts)
+                self._run_step(
+                    run, "DOCUMENTS", rule_version, check_key, subject_facts,
+                    correlation_id=correlation_id,
+                )
 
     def _resolve_product_id(
         self,
@@ -804,6 +825,7 @@ class AssessmentRunService:
         rule_version,
         subject_key: str | None,
         facts: dict[str, Any],
+        correlation_id: str | None = None,
     ) -> None:
         input_hash = self.hash_facts(facts)
 
@@ -836,7 +858,7 @@ class AssessmentRunService:
         self.step_runs.create(step)
         self.db.commit()
 
-        self._apply_output(run, rule_version, step, result, facts)
+        self._apply_output(run, rule_version, step, result, facts, correlation_id=correlation_id)
 
     def _effective_unknown_behavior(self, result, rule_version) -> str:
         if result.unknown_reason == "low_confidence":
@@ -847,7 +869,9 @@ class AssessmentRunService:
             return UnknownBehavior.HUMAN_REVIEW.value
         return rule_version.unknown_behavior
 
-    def _apply_output(self, run, rule_version, step, result, facts) -> None:
+    def _apply_output(
+        self, run, rule_version, step, result, facts, correlation_id: str | None = None,
+    ) -> None:
         output_type = rule_version.output_type
         effective_unknown_behavior = self._effective_unknown_behavior(result, rule_version)
 
@@ -860,7 +884,9 @@ class AssessmentRunService:
             self._create_requirement_result(run, rule_version, step, output_type, outcome, facts)
 
         elif output_type == RuleOutputType.FINDING_PROPOSAL.value:
-            self._maybe_propose_finding(run, rule_version, step, result, facts)
+            self._maybe_propose_finding(
+                run, rule_version, step, result, facts, correlation_id=correlation_id,
+            )
 
         # EVIDENCE_REQUEST / WORKFLOW_GATE / CALCULATION_COMPONENT: stubbed
         # in this pass - no Evidence/Document or workflow-engine model
@@ -916,7 +942,9 @@ class AssessmentRunService:
         )
         self.db.commit()
 
-    def _maybe_propose_finding(self, run, rule_version, step, result, facts) -> None:
+    def _maybe_propose_finding(
+        self, run, rule_version, step, result, facts, correlation_id: str | None = None,
+    ) -> None:
         if result.outcome == "MATCH":
             rationale = f"Condition matched: {self._trace_summary(result.trace)}"
         elif result.outcome == "UNKNOWN":
@@ -973,6 +1001,7 @@ class AssessmentRunService:
             severity=severity,
             hard_gate_effect=hard_gate_effect,
             rationale=rationale,
+            correlation_id=correlation_id,
         )
         self.db.commit()
 
