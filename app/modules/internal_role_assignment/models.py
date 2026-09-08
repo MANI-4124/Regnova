@@ -42,6 +42,15 @@ class InternalRoleCode(str, Enum):
     # code rather than riding on PLATFORM_ADMIN's scope list. See
     # CLAUDE.md "Regulatory content approval workflow".
     REGULATORY_CONTENT_ADVISOR = "REGULATORY_CONTENT_ADVISOR"
+    # Strictly read-only - grants no write/decision authority anywhere
+    # in this codebase, unlike every other internal role. Added for
+    # FR-14's own "auditor" actor, which had no home in this model:
+    # every other code grants some action authority (content authoring,
+    # finding review, technical operations); AUDITOR grants only
+    # cross-tier, cross-organization READ access to the audit log (see
+    # AuditService._resolve_internal_tier_grants) - see CLAUDE.md
+    # "Audit log: audit_event, tier/redaction, query surface".
+    AUDITOR = "AUDITOR"
 
 
 class InternalRoleAssignmentStatus(str, Enum):

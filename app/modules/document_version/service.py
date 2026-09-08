@@ -8,6 +8,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.core.settings import Settings, get_settings
+from app.modules.audit.repository import OutboxRepository
 from app.modules.document.exceptions import DocumentNotFound
 from app.modules.document.repository import DocumentRepository
 from app.modules.evidence.repository import EvidenceRepository
@@ -114,6 +115,7 @@ class DocumentVersionService:
         self.documents = DocumentRepository(db)
         self.repository = DocumentVersionRepository(db)
         self.evidence = EvidenceRepository(db)
+        self.outbox = OutboxRepository(db)
 
     def _get_document_or_404(self, organization_id: UUID, document_id: UUID):
         document = self.documents.get_by_id(organization_id, document_id)
@@ -157,6 +159,7 @@ class DocumentVersionService:
         content: bytes,
         notes: str | None = None,
         actor_user_id: UUID | None = None,
+        correlation_id: str | None = None,
     ) -> DocumentVersion:
         self._get_document_or_404(organization_id, document_id)
 
@@ -216,6 +219,29 @@ class DocumentVersionService:
                 "DOCUMENT_VERSION_SUPERSEDED",
             )
 
+        # FR-14/Appendix 2's own canonical name, used verbatim - a
+        # future consumer registered against exactly this event_type
+        # (e.g. C14's "Evidence matching, consistency checks" for
+        # DocumentVersionVerified) stays aligned with the spec's own
+        # vocabulary. Not emitted for the checksum-dedup no-op above -
+        # nothing changed, nothing to record.
+        self.outbox.append(
+            organization_id=organization_id,
+            event_type="DocumentVersionUploaded",
+            schema_version=1,
+            payload={
+                "document_id": str(document_id),
+                "document_version_id": str(version.id),
+                "version_number": version.version_number,
+                "content_type": content_type,
+                "size_bytes": version.size_bytes,
+                "checksum": checksum,
+                "supersedes_id": str(current.id) if current else None,
+            },
+            correlation_id=correlation_id,
+            actor_user_id=actor_user_id,
+        )
+
         self.db.commit()
 
         return version
@@ -232,9 +258,11 @@ class DocumentVersionService:
         *,
         note: str | None = None,
         actor_user_id: UUID | None = None,
+        correlation_id: str | None = None,
     ) -> DocumentVersion:
         version = self.get_by_id(organization_id, document_id, version_id)
         self._require_reviewable(version)
+        from_status = version.status
 
         version.status = DocumentVersionStatus.VERIFIED.value
         version.reviewed_by_user_id = actor_user_id
@@ -242,6 +270,11 @@ class DocumentVersionService:
         version.review_note = note
 
         self.repository.update(version)
+        self._publish_reviewed(
+            "DocumentVersionVerified", version, organization_id=organization_id,
+            document_id=document_id, from_status=from_status, note=note,
+            actor_user_id=actor_user_id, correlation_id=correlation_id,
+        )
         self.db.commit()
 
         return version
@@ -254,9 +287,11 @@ class DocumentVersionService:
         *,
         note: str,
         actor_user_id: UUID | None = None,
+        correlation_id: str | None = None,
     ) -> DocumentVersion:
         version = self.get_by_id(organization_id, document_id, version_id)
         self._require_reviewable(version)
+        from_status = version.status
 
         version.status = DocumentVersionStatus.REJECTED.value
         version.reviewed_by_user_id = actor_user_id
@@ -264,6 +299,11 @@ class DocumentVersionService:
         version.review_note = note
 
         self.repository.update(version)
+        self._publish_reviewed(
+            "DocumentVersionRejected", version, organization_id=organization_id,
+            document_id=document_id, from_status=from_status, note=note,
+            actor_user_id=actor_user_id, correlation_id=correlation_id,
+        )
         self.db.commit()
 
         return version
@@ -276,9 +316,11 @@ class DocumentVersionService:
         *,
         note: str,
         actor_user_id: UUID | None = None,
+        correlation_id: str | None = None,
     ) -> DocumentVersion:
         version = self.get_by_id(organization_id, document_id, version_id)
         self._require_reviewable(version)
+        from_status = version.status
 
         version.status = DocumentVersionStatus.QUARANTINED.value
         version.reviewed_by_user_id = actor_user_id
@@ -286,9 +328,51 @@ class DocumentVersionService:
         version.review_note = note
 
         self.repository.update(version)
+        self._publish_reviewed(
+            "DocumentVersionQuarantined", version, organization_id=organization_id,
+            document_id=document_id, from_status=from_status, note=note,
+            actor_user_id=actor_user_id, correlation_id=correlation_id,
+        )
         self.db.commit()
 
         return version
+
+    def _publish_reviewed(
+        self,
+        event_type: str,
+        version: DocumentVersion,
+        *,
+        organization_id: UUID,
+        document_id: UUID,
+        from_status: str,
+        note: str | None,
+        actor_user_id: UUID | None,
+        correlation_id: str | None,
+    ) -> None:
+        """
+        Three distinct event types (DocumentVersionVerified is
+        Appendix 2's own canonical name; Rejected/Quarantined are new,
+        added alongside it) rather than one parameterized event - unlike
+        Finding's seven transitions collapsing into one
+        FindingDecisionChanged, there are only three fixed, mutually
+        exclusive outcomes here, and matching Appendix 2's own verbatim
+        name for the one it already defines seemed more valuable than
+        parameterizing three names into one. See CLAUDE.md "Audit log".
+        """
+        self.outbox.append(
+            organization_id=organization_id,
+            event_type=event_type,
+            schema_version=1,
+            payload={
+                "document_id": str(document_id),
+                "document_version_id": str(version.id),
+                "from_status": from_status,
+                "to_status": version.status,
+                "note": note,
+            },
+            correlation_id=correlation_id,
+            actor_user_id=actor_user_id,
+        )
 
 
 class DocumentFieldService:
@@ -304,6 +388,7 @@ class DocumentFieldService:
         self.versions = DocumentVersionRepository(db)
         self.fields = DocumentFieldRepository(db)
         self.revisions = DocumentFieldRevisionRepository(db)
+        self.outbox = OutboxRepository(db)
 
     def _get_version_or_404(
         self,
@@ -342,6 +427,7 @@ class DocumentFieldService:
         confidence: float | None = None,
         location: dict[str, Any] | None = None,
         actor_user_id: UUID | None = None,
+        correlation_id: str | None = None,
     ) -> DocumentField:
         version = self._get_version_or_404(organization_id, document_id, version_id)
 
@@ -373,6 +459,31 @@ class DocumentFieldService:
             entered_by_user_id=actor_user_id,
         )
         self.revisions.create(revision)
+
+        # Closes AC-FR-04-02 ("corrections create a revision and an
+        # audit event") - this event type was previously unsatisfiable:
+        # nothing existed to write an audit event to until this ticket.
+        # "Revised" rather than "Corrected" since this fires for the
+        # FIRST entry too (revision_number == 1), not only genuine
+        # corrections. Customer-visible - see CLAUDE.md "Audit log" for
+        # why a document's own org has no internal/customer line to
+        # draw here at all.
+        self.outbox.append(
+            organization_id=organization_id,
+            event_type="DocumentFieldRevised",
+            schema_version=1,
+            payload={
+                "document_id": str(document_id),
+                "document_version_id": str(version_id),
+                "field_key": field_key,
+                "revision_number": next_revision_number,
+                "value": value,
+                "confidence": confidence,
+                "method": "MANUAL",
+            },
+            correlation_id=correlation_id,
+            actor_user_id=actor_user_id,
+        )
 
         self.db.commit()
         self.db.refresh(field)

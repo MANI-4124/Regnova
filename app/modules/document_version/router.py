@@ -3,7 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_db_session, get_document_storage
+from app.core.dependencies import get_correlation_id, get_db_session, get_document_storage
 from app.modules.rbac.dependencies import require_employee, require_manager
 from app.modules.user.models import User
 from app.storage import DocumentStorage
@@ -70,6 +70,7 @@ async def create_document_version(
     file: UploadFile = File(...),
     notes: str | None = Form(None),
     current_user: User = Depends(require_employee),
+    correlation_id: str = Depends(get_correlation_id),
     service: DocumentVersionService = Depends(get_document_version_service),
 ):
     content = await file.read()
@@ -82,6 +83,7 @@ async def create_document_version(
         content=content,
         notes=notes,
         actor_user_id=current_user.id,
+        correlation_id=correlation_id,
     )
 
 
@@ -94,6 +96,7 @@ def verify_document_version(
     version_id: UUID,
     payload: DocumentVersionReviewRequest,
     current_user: User = Depends(require_manager),
+    correlation_id: str = Depends(get_correlation_id),
     service: DocumentVersionService = Depends(get_document_version_service),
 ):
     return service.verify(
@@ -102,6 +105,7 @@ def verify_document_version(
         version_id,
         note=payload.note,
         actor_user_id=current_user.id,
+        correlation_id=correlation_id,
     )
 
 
@@ -114,6 +118,7 @@ def reject_document_version(
     version_id: UUID,
     payload: DocumentVersionRejectRequest,
     current_user: User = Depends(require_manager),
+    correlation_id: str = Depends(get_correlation_id),
     service: DocumentVersionService = Depends(get_document_version_service),
 ):
     return service.reject(
@@ -122,6 +127,7 @@ def reject_document_version(
         version_id,
         note=payload.note,
         actor_user_id=current_user.id,
+        correlation_id=correlation_id,
     )
 
 
@@ -134,6 +140,7 @@ def quarantine_document_version(
     version_id: UUID,
     payload: DocumentVersionRejectRequest,
     current_user: User = Depends(require_manager),
+    correlation_id: str = Depends(get_correlation_id),
     service: DocumentVersionService = Depends(get_document_version_service),
 ):
     return service.quarantine(
@@ -142,6 +149,7 @@ def quarantine_document_version(
         version_id,
         note=payload.note,
         actor_user_id=current_user.id,
+        correlation_id=correlation_id,
     )
 
 
@@ -168,6 +176,7 @@ def set_document_field(
     field_key: str,
     payload: DocumentFieldSetRequest,
     current_user: User = Depends(require_employee),
+    correlation_id: str = Depends(get_correlation_id),
     service: DocumentFieldService = Depends(get_document_field_service),
 ):
     return service.set_field(
@@ -179,4 +188,5 @@ def set_document_field(
         confidence=payload.confidence,
         location=payload.location,
         actor_user_id=current_user.id,
+        correlation_id=correlation_id,
     )

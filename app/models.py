@@ -3,7 +3,7 @@ from app.modules.role.models import Role
 from app.modules.user.models import User
 from app.modules.product.models import Product
 from app.modules.product_version.models import ProductVersion
-from app.modules.audit.models import OutboxEvent
+from app.modules.audit.models import AuditEvent, OutboxEvent
 from app.modules.source.models import Source
 from app.modules.source_version.models import SourceVersion
 from app.modules.source_location.models import SourceLocation
@@ -57,6 +57,7 @@ __all__ = [
     "Product",
     "ProductVersion",
     "OutboxEvent",
+    "AuditEvent",
     "Source",
     "SourceVersion",
     "SourceLocation",

@@ -6,6 +6,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.modules.audit.repository import OutboxRepository
 from app.modules.internal_role_assignment.models import InternalRoleCode
 from app.modules.internal_role_assignment.repository import InternalRoleAssignmentRepository
 from app.modules.rbac.exceptions import PermissionDenied
@@ -64,6 +65,7 @@ class FindingService:
         self.revisions = FindingRevisionRepository(db)
         self.users = UserRepository(db)
         self.internal_role_assignments = InternalRoleAssignmentRepository(db)
+        self.outbox = OutboxRepository(db)
 
     def get_all(
         self,
@@ -296,6 +298,49 @@ class FindingService:
 
         return revision
 
+    def _publish_decision_changed(
+        self,
+        finding: Finding,
+        *,
+        organization_id: UUID,
+        from_status: str,
+        to_status: str,
+        actor_user_id: UUID,
+        rationale: str,
+        disposition: str | None,
+        correlation_id: str | None,
+    ) -> None:
+        """
+        FindingDecisionChanged (Appendix 2) - one parameterized event
+        covering all seven transition methods, not seven names, matching
+        C14's own singular naming ("RA/customer resolution decision
+        revision") and the ContentVersionTransitioned precedent. `to_status`
+        distinguishes which transition actually fired.
+
+        rationale is included in full here, unlike FindingProposed's own
+        engine-driven event - see AuditService's builder for why: a
+        human transition's rationale is the customer-facing "why" FR-14
+        itself names, not an RA-only note. Tier/redaction assignment
+        happens entirely downstream, in the audit consumer - this
+        method's job is only to publish the complete fact.
+        """
+        self.outbox.append(
+            organization_id=organization_id,
+            event_type="FindingDecisionChanged",
+            schema_version=1,
+            payload={
+                "finding_id": str(finding.id),
+                "product_market_state_id": str(finding.product_market_state_id),
+                "dimension": finding.dimension,
+                "from_status": from_status,
+                "to_status": to_status,
+                "rationale": rationale,
+                "disposition": disposition,
+            },
+            correlation_id=correlation_id,
+            actor_user_id=actor_user_id,
+        )
+
     # --- Transitions -----------------------------------------------------
     # Each: resolve the finding (org-scoped - this is the tenant
     # boundary RA/Senior actors cannot cross this pass), check the
@@ -312,6 +357,7 @@ class FindingService:
         actor_user_id: UUID,
         rationale: str,
         disposition: str | None = None,
+        correlation_id: str | None = None,
     ) -> Finding:
         """PROPOSED -> OPEN. Customer manager or RA/Senior triage."""
 
@@ -335,6 +381,16 @@ class FindingService:
             rationale=rationale,
             disposition=disposition,
         )
+        self._publish_decision_changed(
+            finding,
+            organization_id=organization_id,
+            from_status=latest.status,
+            to_status=FindingStatus.OPEN.value,
+            actor_user_id=actor_user_id,
+            rationale=rationale,
+            disposition=disposition,
+            correlation_id=correlation_id,
+        )
         self.db.commit()
 
         return finding
@@ -348,6 +404,7 @@ class FindingService:
         actor_user_id: UUID,
         rationale: str,
         disposition: str | None = None,
+        correlation_id: str | None = None,
     ) -> Finding:
         """
         PROPOSED -> REJECTED. RA/Senior only - B4 frames rejection as
@@ -375,6 +432,16 @@ class FindingService:
             rationale=rationale,
             disposition=disposition,
         )
+        self._publish_decision_changed(
+            finding,
+            organization_id=organization_id,
+            from_status=latest.status,
+            to_status=FindingStatus.REJECTED.value,
+            actor_user_id=actor_user_id,
+            rationale=rationale,
+            disposition=disposition,
+            correlation_id=correlation_id,
+        )
         self.db.commit()
 
         return finding
@@ -388,6 +455,7 @@ class FindingService:
         actor_user_id: UUID,
         rationale: str,
         disposition: str | None = None,
+        correlation_id: str | None = None,
     ) -> Finding:
         """PROPOSED -> NOT_APPLICABLE. RA/Senior only - a regulatory-
         applicability judgment, same weight as C5.1's Does Not Apply."""
@@ -411,6 +479,16 @@ class FindingService:
             rationale=rationale,
             disposition=disposition,
         )
+        self._publish_decision_changed(
+            finding,
+            organization_id=organization_id,
+            from_status=latest.status,
+            to_status=FindingStatus.NOT_APPLICABLE.value,
+            actor_user_id=actor_user_id,
+            rationale=rationale,
+            disposition=disposition,
+            correlation_id=correlation_id,
+        )
         self.db.commit()
 
         return finding
@@ -423,6 +501,7 @@ class FindingService:
         finding_id: UUID,
         actor_user_id: UUID,
         rationale: str,
+        correlation_id: str | None = None,
     ) -> Finding:
         """OPEN -> CUSTOMER_RESPONDED. Customer manager only - this is
         literally the customer's own action B4 names."""
@@ -441,6 +520,16 @@ class FindingService:
             actor_user_id=actor_user_id,
             rationale=rationale,
         )
+        self._publish_decision_changed(
+            finding,
+            organization_id=organization_id,
+            from_status=latest.status,
+            to_status=FindingStatus.CUSTOMER_RESPONDED.value,
+            actor_user_id=actor_user_id,
+            rationale=rationale,
+            disposition=None,
+            correlation_id=correlation_id,
+        )
         self.db.commit()
 
         return finding
@@ -453,6 +542,7 @@ class FindingService:
         finding_id: UUID,
         actor_user_id: UUID,
         rationale: str,
+        correlation_id: str | None = None,
     ) -> Finding:
         """CUSTOMER_RESPONDED -> OPEN. RA/Senior only - the response was
         reviewed and judged insufficient; still needs the customer's
@@ -476,6 +566,16 @@ class FindingService:
             actor_user_id=actor_user_id,
             rationale=rationale,
         )
+        self._publish_decision_changed(
+            finding,
+            organization_id=organization_id,
+            from_status=latest.status,
+            to_status=FindingStatus.OPEN.value,
+            actor_user_id=actor_user_id,
+            rationale=rationale,
+            disposition=None,
+            correlation_id=correlation_id,
+        )
         self.db.commit()
 
         return finding
@@ -490,6 +590,7 @@ class FindingService:
         rationale: str,
         disposition: str | None = None,
         resolution_decision: str | None = None,
+        correlation_id: str | None = None,
     ) -> Finding:
         """
         PROPOSED/OPEN/CUSTOMER_RESPONDED -> RESOLVED. Authority is
@@ -529,6 +630,16 @@ class FindingService:
             disposition=disposition,
             resolution_decision=resolution_decision,
         )
+        self._publish_decision_changed(
+            finding,
+            organization_id=organization_id,
+            from_status=latest.status,
+            to_status=FindingStatus.RESOLVED.value,
+            actor_user_id=actor_user_id,
+            rationale=rationale,
+            disposition=disposition,
+            correlation_id=correlation_id,
+        )
         self.db.commit()
 
         return finding
@@ -542,6 +653,7 @@ class FindingService:
         actor_user_id: UUID,
         rationale: str,
         disposition: str | None = None,
+        correlation_id: str | None = None,
     ) -> Finding:
         """
         PROPOSED/OPEN/CUSTOMER_RESPONDED -> ACCEPTED_WITH_RATIONALE.
@@ -569,6 +681,16 @@ class FindingService:
             actor_user_id=actor_user_id,
             rationale=rationale,
             disposition=disposition,
+        )
+        self._publish_decision_changed(
+            finding,
+            organization_id=organization_id,
+            from_status=latest.status,
+            to_status=FindingStatus.ACCEPTED_WITH_RATIONALE.value,
+            actor_user_id=actor_user_id,
+            rationale=rationale,
+            disposition=disposition,
+            correlation_id=correlation_id,
         )
         self.db.commit()
 

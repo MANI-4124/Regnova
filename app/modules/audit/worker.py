@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.modules.notification.service import NotificationService
 
 from .repository import OutboxRepository
+from .service import AuditService
 
 logger = logging.getLogger(__name__)
 
@@ -48,13 +49,19 @@ def _publish(db: Session, event) -> None:
     """
     V1's own dispatch transport is just this log line (see
     dispatch_pending_events' docstring) - independent of whether any
-    real notification gets produced below. Turning an event into
-    Notification rows is a separate, generic step: NotificationService.
-    record_for_event() looks up a recipient resolver for event.event_type
-    (see app.modules.notification.service.RESOLVERS) and creates zero or
+    real notification/audit record gets produced below. Turning an
+    event into Notification rows is a separate, generic step:
+    NotificationService.record_for_event() looks up a recipient
+    resolver for event.event_type (see
+    app.modules.notification.service.RESOLVERS) and creates zero or
     more rows - there is no per-event-type branching in this function
     itself, that lives entirely in the resolver registry. See CLAUDE.md
     "Notifications".
+
+    AuditService.record_for_event() is the same shape but NOT selective
+    - every event produces exactly one AuditEvent row (see CLAUDE.md
+    "Audit log": the audit log's whole point is completeness, unlike
+    notifications' deliberate narrowness).
     """
 
     logger.info(
@@ -66,6 +73,8 @@ def _publish(db: Session, event) -> None:
             "correlation_id": event.correlation_id,
         },
     )
+
+    AuditService(db).record_for_event(event)
 
     notifications = NotificationService(db).record_for_event(event)
 

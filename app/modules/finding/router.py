@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_db_session
+from app.core.dependencies import get_correlation_id, get_db_session
 from app.modules.auth.dependencies import get_current_active_user
 from app.modules.product_market_state.exceptions import ProductMarketStateNotFound
 from app.modules.product_market_state.repository import ProductMarketStateRepository
@@ -109,6 +109,7 @@ def accept_finding(
     product_market_state_id: UUID,
     payload: FindingTransitionRequest,
     current_user: User = Depends(get_current_active_user),
+    correlation_id: str = Depends(get_correlation_id),
     service: FindingService = Depends(get_finding_service),
 ):
     finding = service.accept(
@@ -118,6 +119,7 @@ def accept_finding(
         actor_user_id=current_user.id,
         rationale=payload.rationale,
         disposition=payload.disposition,
+        correlation_id=correlation_id,
     )
     return _to_detail_response(service, finding)
 
@@ -131,6 +133,7 @@ def reject_finding(
     product_market_state_id: UUID,
     payload: FindingTransitionRequest,
     current_user: User = Depends(get_current_active_user),
+    correlation_id: str = Depends(get_correlation_id),
     service: FindingService = Depends(get_finding_service),
 ):
     finding = service.reject(
@@ -140,6 +143,7 @@ def reject_finding(
         actor_user_id=current_user.id,
         rationale=payload.rationale,
         disposition=payload.disposition,
+        correlation_id=correlation_id,
     )
     return _to_detail_response(service, finding)
 
@@ -153,6 +157,7 @@ def mark_finding_not_applicable(
     product_market_state_id: UUID,
     payload: FindingTransitionRequest,
     current_user: User = Depends(get_current_active_user),
+    correlation_id: str = Depends(get_correlation_id),
     service: FindingService = Depends(get_finding_service),
 ):
     finding = service.mark_not_applicable(
@@ -162,6 +167,7 @@ def mark_finding_not_applicable(
         actor_user_id=current_user.id,
         rationale=payload.rationale,
         disposition=payload.disposition,
+        correlation_id=correlation_id,
     )
     return _to_detail_response(service, finding)
 
@@ -175,6 +181,7 @@ def respond_to_finding(
     product_market_state_id: UUID,
     payload: FindingRationaleRequest,
     current_user: User = Depends(get_current_active_user),
+    correlation_id: str = Depends(get_correlation_id),
     service: FindingService = Depends(get_finding_service),
 ):
     finding = service.respond(
@@ -183,6 +190,7 @@ def respond_to_finding(
         finding_id=finding_id,
         actor_user_id=current_user.id,
         rationale=payload.rationale,
+        correlation_id=correlation_id,
     )
     return _to_detail_response(service, finding)
 
@@ -196,6 +204,7 @@ def reopen_finding(
     product_market_state_id: UUID,
     payload: FindingRationaleRequest,
     current_user: User = Depends(get_current_active_user),
+    correlation_id: str = Depends(get_correlation_id),
     service: FindingService = Depends(get_finding_service),
 ):
     finding = service.reopen(
@@ -204,6 +213,7 @@ def reopen_finding(
         finding_id=finding_id,
         actor_user_id=current_user.id,
         rationale=payload.rationale,
+        correlation_id=correlation_id,
     )
     return _to_detail_response(service, finding)
 
@@ -217,6 +227,7 @@ def resolve_finding(
     product_market_state_id: UUID,
     payload: FindingResolveRequest,
     current_user: User = Depends(get_current_active_user),
+    correlation_id: str = Depends(get_correlation_id),
     service: FindingService = Depends(get_finding_service),
 ):
     finding = service.resolve(
@@ -227,6 +238,7 @@ def resolve_finding(
         rationale=payload.rationale,
         disposition=payload.disposition,
         resolution_decision=payload.resolution_decision,
+        correlation_id=correlation_id,
     )
     return _to_detail_response(service, finding)
 
@@ -240,6 +252,7 @@ def accept_finding_with_rationale(
     product_market_state_id: UUID,
     payload: FindingTransitionRequest,
     current_user: User = Depends(get_current_active_user),
+    correlation_id: str = Depends(get_correlation_id),
     service: FindingService = Depends(get_finding_service),
 ):
     finding = service.accept_with_rationale(
@@ -249,5 +262,6 @@ def accept_finding_with_rationale(
         actor_user_id=current_user.id,
         rationale=payload.rationale,
         disposition=payload.disposition,
+        correlation_id=correlation_id,
     )
     return _to_detail_response(service, finding)

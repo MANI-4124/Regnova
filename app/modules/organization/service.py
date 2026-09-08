@@ -5,10 +5,11 @@ from uuid import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.modules.audit.repository import OutboxRepository
+from app.modules.audit.repository import AuditEventRepository, OutboxRepository
 
 from .exceptions import (
     OrganizationAlreadyExists,
+    OrganizationHasAuditHistory,
     OrganizationNotFound,
 )
 from .models import Organization
@@ -29,6 +30,7 @@ class OrganizationService:
         self.db = db
         self.repository = OrganizationRepository(db)
         self.outbox = OutboxRepository(db)
+        self.audit_events = AuditEventRepository(db)
 
     def get_all(self) -> list[OrganizationResponse]:
         organizations = self.repository.get_all()
@@ -124,6 +126,14 @@ class OrganizationService:
 
         if organization is None:
             raise OrganizationNotFound()
+
+        # Enforced here AND at the DB level (AuditEvent.organization_id
+        # is ondelete=RESTRICT) - SQLite in this test suite doesn't
+        # enforce foreign keys at all, so this pre-check is what makes
+        # the behavior real and verified here, not just documented
+        # intent for Postgres. See OrganizationHasAuditHistory.
+        if self.audit_events.exists_for_organization(organization_id):
+            raise OrganizationHasAuditHistory()
 
         try:
             self.repository.delete(organization)
