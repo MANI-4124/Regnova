@@ -2,9 +2,89 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
+from app.core.dependencies import get_document_storage
+from app.main import app
 from app.modules.assessment_run.service import AssessmentRunService
+from app.storage import LocalFilesystemStorage
 
 # --- Synthetic Documents fixtures only - never real seeded NPRA content ---
+
+
+@pytest.fixture()
+def storage(tmp_path):
+    """
+    Overrides get_document_storage the same way the `client` fixture
+    overrides get_db_session - see tests/test_document.py's own copy of
+    this fixture for the full reasoning.
+    """
+    backend = LocalFilesystemStorage(tmp_path)
+    app.dependency_overrides[get_document_storage] = lambda: backend
+    yield backend
+    app.dependency_overrides.pop(get_document_storage, None)
+
+
+def _create_document(client, tenant, document_type="GMP_CERTIFICATE"):
+    response = client.post(
+        "/documents", json={"document_type": document_type}, headers=tenant["headers"],
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _upload_document_version(client, tenant, document_id, content=b"%PDF-1.4\n%mock cert\n%%EOF", filename="cert.pdf"):
+    files = {"file": (filename, content, "application/pdf")}
+    response = client.post(
+        f"/documents/{document_id}/versions", files=files, headers=tenant["headers"],
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _verify_document_version(client, tenant, document_id, version_id):
+    response = client.post(
+        f"/documents/{document_id}/versions/{version_id}/verify",
+        json={}, headers=tenant["headers"],
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _set_document_field(client, tenant, document_id, version_id, field_key, value, confidence=None):
+    response = client.put(
+        f"/documents/{document_id}/versions/{version_id}/fields/{field_key}",
+        json={"value": value, "confidence": confidence},
+        headers=tenant["headers"],
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _link_evidence(client, tenant, document_version_id, product_id, requirement_version_id=None):
+    response = client.post(
+        "/evidence",
+        json={
+            "document_version_id": document_version_id,
+            "product_id": product_id,
+            "requirement_version_id": requirement_version_id,
+        },
+        headers=tenant["headers"],
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _create_verified_document_with_fields(
+    client, tenant, *, document_type="GMP_CERTIFICATE", fields=None, content=b"%PDF-1.4\n%mock cert\n%%EOF",
+):
+    """fields: dict of field_key -> (value, confidence)."""
+    document = _create_document(client, tenant, document_type=document_type)
+    version = _upload_document_version(client, tenant, document["id"], content=content)
+    for field_key, (value, confidence) in (fields or {}).items():
+        _set_document_field(client, tenant, document["id"], version["id"], field_key, value, confidence)
+    version = _verify_document_version(client, tenant, document["id"], version["id"])
+    return document, version
 
 
 def _create_product(client, tenant, name="Widget"):
@@ -620,3 +700,244 @@ def test_hash_facts_is_sensitive_to_confidence(db):
     b = {"label_fields": [{"field_key": "net_quantity", "value": "50 mL", "confidence": 0.31}]}
 
     assert service.hash_facts(a) != service.hash_facts(b)
+
+
+# --- Wiring to real Evidence/DocumentVersion/DocumentField ----------------
+#
+# obligation_type is deliberately lowercase ("gmp_certificate", matching
+# every other test in this file) while document_type is uppercase
+# ("GMP_CERTIFICATE", the real DocumentType enum) - exercising the
+# case-insensitive match this codebase's own existing content already
+# requires. See CLAUDE.md "Assessment engine".
+
+
+def test_build_document_facts_null_confidence_is_unwrapped_not_hard_pinned(db):
+    """
+    Explicitly required: a null-confidence field must not silently
+    become {"value": x, "confidence": 0.0} via condition_evaluator's
+    "malformed input" fail-safe, which would hard-pin every manually-
+    entered field to HUMAN_REVIEW_REQUIRED forever.
+    """
+    service = AssessmentRunService(db)
+
+    facts = service._build_document_facts(
+        "gmp_certificate",
+        {
+            "document_type": "gmp_certificate",
+            "status": "uploaded",
+            "manufacturer": {"value": "Acme Corp", "confidence": None},
+        },
+        datetime.now(timezone.utc),
+    )
+
+    assert facts["manufacturer"] == "Acme Corp"  # plain, not wrapped/gated
+
+
+def test_real_evidence_satisfies_checklist_with_verified_status(client, tenant_a, regulatory_content_writer, storage):
+    _build_document_rule(
+        client, regulatory_content_writer,
+        condition={"op": "not_exists", "field": "status"},
+        output_type="FINDING_PROPOSAL",
+    )
+
+    product = _create_product(client, tenant_a)
+    version = _create_version(client, tenant_a, product["id"])
+    state = _create_state(client, tenant_a, product["id"], version["id"])
+
+    _, doc_version = _create_verified_document_with_fields(client, tenant_a)
+    _link_evidence(client, tenant_a, doc_version["id"], product["id"])
+
+    run = _run_assessment(client, tenant_a, state["id"])  # no caller documents[] submitted at all
+    detail = _get_run_detail(client, tenant_a, state["id"], run["id"])
+
+    step = detail["step_runs"][0]
+    assert step["subject_key"] == "gmp_certificate"
+    assert step["outcome"] == "NO_MATCH"  # status IS present -> not_exists fails -> no issue
+    assert step["input_facts"]["status"] == "VERIFIED"
+
+    assert _get_findings(client, tenant_a, state["id"]) == []
+
+
+def test_real_evidence_field_values_used_over_caller_supplied_json(client, tenant_a, regulatory_content_writer, storage):
+    """
+    Real evidence wins whole-hog for a document_type once it resolves -
+    a caller submitting different data for the same checklist item is
+    ignored, not merged.
+    """
+    _build_document_rule(
+        client, regulatory_content_writer,
+        condition={"op": "equals", "field": "manufacturer", "value": "Acme Corp"},
+        output_type="REQUIREMENT_RESULT",
+    )
+
+    product = _create_product(client, tenant_a)
+    version = _create_version(client, tenant_a, product["id"])
+    state = _create_state(client, tenant_a, product["id"], version["id"])
+
+    _, doc_version = _create_verified_document_with_fields(
+        client, tenant_a, fields={"manufacturer": ("Acme Corp", 0.9)},
+    )
+    _link_evidence(client, tenant_a, doc_version["id"], product["id"])
+
+    # Caller submits a DIFFERENT manufacturer for the same document_type -
+    # must be ignored in favor of the real, verified evidence.
+    run = _run_assessment(
+        client, tenant_a, state["id"],
+        documents=[{"document_type": "gmp_certificate", "status": "uploaded",
+                    "manufacturer": {"value": "Someone Else Ltd", "confidence": 0.9}}],
+    )
+    detail = _get_run_detail(client, tenant_a, state["id"], run["id"])
+
+    step = detail["step_runs"][0]
+    assert step["input_facts"]["manufacturer"] == {"value": "Acme Corp", "confidence": 0.9}
+    assert step["outcome"] == "MATCH"
+
+
+def test_real_evidence_null_confidence_field_is_not_hard_pinned_to_human_review(
+    client, tenant_a, regulatory_content_writer, storage,
+):
+    """
+    Explicitly required, end to end: a manually-entered field with no
+    recorded confidence must let a REQUIREMENT_RESULT rule resolve
+    normally (dimension COMPLIANT), not force HUMAN_REVIEW_REQUIRED the
+    way a genuinely low-confidence OCR read would.
+    """
+    _build_document_rule(
+        client, regulatory_content_writer,
+        condition={"op": "equals", "field": "manufacturer", "value": "Acme Corp"},
+        output_type="REQUIREMENT_RESULT",
+        unknown_behavior="HUMAN_REVIEW",
+    )
+
+    product = _create_product(client, tenant_a)
+    version = _create_version(client, tenant_a, product["id"])
+    state = _create_state(client, tenant_a, product["id"], version["id"])
+
+    # confidence deliberately omitted (defaults to null) - manual entry,
+    # nobody has rated it either way.
+    _, doc_version = _create_verified_document_with_fields(
+        client, tenant_a, fields={"manufacturer": ("Acme Corp", None)},
+    )
+    _link_evidence(client, tenant_a, doc_version["id"], product["id"])
+
+    run = _run_assessment(client, tenant_a, state["id"])
+    detail = _get_run_detail(client, tenant_a, state["id"], run["id"])
+
+    step = detail["step_runs"][0]
+    assert step["input_facts"]["manufacturer"] == "Acme Corp"  # plain, unwrapped
+    assert step["outcome"] == "MATCH"
+    assert detail["dimension_assessments"][0]["state"] == "COMPLIANT"
+
+
+def test_two_documents_of_same_type_each_evaluated_as_own_subject(client, tenant_a, regulatory_content_writer, storage):
+    _build_document_rule(
+        client, regulatory_content_writer,
+        condition={"op": "exists", "field": "batch_id"},
+        output_type="REQUIREMENT_RESULT",
+        obligation_type="coa",
+    )
+
+    product = _create_product(client, tenant_a)
+    version = _create_version(client, tenant_a, product["id"])
+    state = _create_state(client, tenant_a, product["id"], version["id"])
+
+    _, coa_1 = _create_verified_document_with_fields(
+        client, tenant_a, document_type="COA", fields={"batch_id": ("BATCH-1", 0.9)},
+        content=b"%PDF-1.4\n%coa one\n%%EOF",
+    )
+    _, coa_2 = _create_verified_document_with_fields(
+        client, tenant_a, document_type="COA", fields={"batch_id": ("BATCH-2", 0.9)},
+        content=b"%PDF-1.4\n%coa two\n%%EOF",
+    )
+    evidence_1 = _link_evidence(client, tenant_a, coa_1["id"], product["id"])
+    evidence_2 = _link_evidence(client, tenant_a, coa_2["id"], product["id"])
+
+    run = _run_assessment(client, tenant_a, state["id"])
+    detail = _get_run_detail(client, tenant_a, state["id"], run["id"])
+
+    subject_keys = {step["subject_key"] for step in detail["step_runs"]}
+    assert subject_keys == {
+        f"coa#{evidence_1['id']}",
+        f"coa#{evidence_2['id']}",
+    }
+    batch_ids = {step["input_facts"]["batch_id"]["value"] for step in detail["step_runs"]}
+    assert batch_ids == {"BATCH-1", "BATCH-2"}
+
+
+def test_evidence_scoped_to_different_requirement_is_excluded(client, tenant_a, regulatory_content_writer, storage):
+    gmp_requirement_version, gmp_rule_version = _build_document_rule_only(
+        client, regulatory_content_writer,
+        condition={"op": "not_exists", "field": "status"},
+        output_type="FINDING_PROPOSAL",
+        obligation_type="gmp_certificate",
+    )
+    cfs_requirement_version, cfs_rule_version = _build_document_rule_only(
+        client, regulatory_content_writer,
+        condition={"op": "not_exists", "field": "status"},
+        output_type="FINDING_PROPOSAL",
+        obligation_type="cfs",
+    )
+    _create_active_release(
+        client, regulatory_content_writer,
+        rule_version_ids=[gmp_rule_version["id"], cfs_rule_version["id"]],
+        requirement_version_ids=[gmp_requirement_version["id"], cfs_requirement_version["id"]],
+    )
+
+    product = _create_product(client, tenant_a)
+    version = _create_version(client, tenant_a, product["id"])
+    state = _create_state(client, tenant_a, product["id"], version["id"])
+
+    # A real GMP-certificate-typed document, but explicitly scoped to the
+    # CFS requirement - a mismatched/mistaken link, not a product-wide one.
+    _, doc_version = _create_verified_document_with_fields(client, tenant_a, document_type="GMP_CERTIFICATE")
+    _link_evidence(
+        client, tenant_a, doc_version["id"], product["id"],
+        requirement_version_id=cfs_requirement_version["id"],
+    )
+
+    run = _run_assessment(client, tenant_a, state["id"])
+    detail = _get_run_detail(client, tenant_a, state["id"], run["id"])
+
+    gmp_step = next(s for s in detail["step_runs"] if s["subject_key"] == "gmp_certificate")
+    # Excluded from the GMP checklist item - falls back to "nothing
+    # resolved", same as if no document existed at all.
+    assert gmp_step["input_facts"] == {"product": {}, "document_type": "gmp_certificate"}
+    assert gmp_step["outcome"] == "MATCH"  # not_exists("status") -> missing -> Finding
+
+
+def test_stale_evidence_is_excluded_after_document_version_superseded(client, tenant_a, regulatory_content_writer, storage):
+    """
+    Point 3: a version can't currently be rejected/quarantined after
+    verification (see CLAUDE.md "Known limitations"), but supersession
+    already flags dependent Evidence stale - confirms the engine
+    actually notices and stops treating the superseded evidence as a
+    resolved document.
+    """
+    _build_document_rule(
+        client, regulatory_content_writer,
+        condition={"op": "not_exists", "field": "status"},
+        output_type="FINDING_PROPOSAL",
+    )
+
+    product = _create_product(client, tenant_a)
+    version = _create_version(client, tenant_a, product["id"])
+    state = _create_state(client, tenant_a, product["id"], version["id"])
+
+    document, doc_version = _create_verified_document_with_fields(client, tenant_a)
+    _link_evidence(client, tenant_a, doc_version["id"], product["id"])
+
+    # Replacement upload - genuinely different bytes for the SAME
+    # Document, superseding the version the Evidence points at.
+    new_version = _upload_document_version(
+        client, tenant_a, document["id"], content=b"%PDF-1.4\n%replacement cert\n%%EOF",
+    )
+    assert new_version["id"] != doc_version["id"]
+    # New version is REVIEW_REQUIRED, not (yet) VERIFIED - so even
+    # without the staleness flag, it wouldn't resolve either.
+
+    run = _run_assessment(client, tenant_a, state["id"])
+    detail = _get_run_detail(client, tenant_a, state["id"], run["id"])
+
+    step = detail["step_runs"][0]
+    assert step["input_facts"] == {"product": {}, "document_type": "gmp_certificate"}
+    assert step["outcome"] == "MATCH"  # missing, per not_exists("status")

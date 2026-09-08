@@ -142,3 +142,23 @@ class DocumentFieldRevisionRepository(
         )
 
         return self.db.scalar(statement) or 0
+
+    def get_latest(
+        self,
+        document_field_id: UUID,
+    ) -> DocumentFieldRevision | None:
+        """
+        The actual current revision row - used by the assessment engine
+        wiring (see CLAUDE.md "Assessment engine") to read a field's
+        current value/confidence/location, unlike
+        get_latest_revision_number above (which only ever needed the
+        number, to compute the next one).
+        """
+        statement = (
+            select(DocumentFieldRevision)
+            .where(DocumentFieldRevision.document_field_id == document_field_id)
+            .order_by(DocumentFieldRevision.revision_number.desc())
+            .limit(1)
+        )
+
+        return self.db.scalar(statement)

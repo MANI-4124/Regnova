@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.common.repository import BaseRepository
+from app.modules.document.models import Document
+from app.modules.document_version.models import DocumentVersion, DocumentVersionStatus
 
 from .models import Evidence
 
@@ -72,6 +74,49 @@ class EvidenceRepository(
             conditions.append(Evidence.requirement_version_id.is_(None))
 
         return self.db.scalar(select(Evidence).where(*conditions))
+
+    def get_current_verified_for_product_and_document_type(
+        self,
+        organization_id: UUID,
+        product_id: UUID,
+        document_type: str,
+    ) -> list[Evidence]:
+        """
+        Real DOCUMENTS-checklist resolution (see CLAUDE.md "Assessment
+        engine") - only Evidence that's both is_current and whose
+        DocumentVersion is VERIFIED; the VERIFIED check is redundant
+        with is_current today (a version can only reach VERIFIED once
+        and Evidence can only be created against one already VERIFIED -
+        see "Document storage and versioning"), kept anyway as cheap,
+        forward-compatible insurance in case a revoke-verification
+        transition is ever added to document_version.
+
+        Document.document_type matched case-INSENSITIVELY - a real,
+        present-day mismatch: existing RequirementVersion.obligation_type
+        content is authored lowercase snake_case, DocumentType is a
+        closed uppercase enum. This is a shim, not a fix - new
+        regulatory content should use DocumentType values verbatim so
+        this normalization stops being load-bearing. Ordered by
+        created_at/id for deterministic multi-document ordering, since
+        the caller hashes this list for reuse comparison and a
+        nondeterministic DB row order would produce spurious hash
+        mismatches between two calls that saw identical data.
+        """
+        statement = (
+            select(Evidence)
+            .join(DocumentVersion, Evidence.document_version_id == DocumentVersion.id)
+            .join(Document, DocumentVersion.document_id == Document.id)
+            .where(
+                Evidence.organization_id == organization_id,
+                Evidence.product_id == product_id,
+                Evidence.is_current.is_(True),
+                DocumentVersion.status == DocumentVersionStatus.VERIFIED.value,
+                func.upper(Document.document_type) == document_type.upper(),
+            )
+            .order_by(Evidence.created_at, Evidence.id)
+        )
+
+        return list(self.db.scalars(statement))
 
     def mark_stale_for_document_version(
         self,

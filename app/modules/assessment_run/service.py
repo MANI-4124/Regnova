@@ -10,6 +10,12 @@ from sqlalchemy.orm import Session
 
 from app.common.enums import UnknownBehavior
 from app.engine import evaluate_condition
+from app.modules.document_version.models import DocumentVersionStatus
+from app.modules.document_version.repository import (
+    DocumentFieldRepository,
+    DocumentFieldRevisionRepository,
+)
+from app.modules.evidence.repository import EvidenceRepository
 from app.modules.finding.repository import FindingRevisionRepository
 from app.modules.finding.service import FindingService
 from app.modules.product_market_state.exceptions import ProductMarketStateNotFound
@@ -40,6 +46,19 @@ from .schemas import AssessmentRunCreate
 
 SUPPORTED_DIMENSIONS = frozenset({"CLAIMS", "LABEL", "DOCUMENTS"})
 
+# Excluded when hashing DOCUMENTS facts for reuse comparison (see
+# AssessmentRunService._facts_for_hashing) - derived/lineage data, not
+# content. days_until_expiry is a function of run.started_at, not of
+# anything that changed on the document itself; _evidence_id/
+# _document_version_id are identifiers, not values, so a document being
+# re-linked under a new Evidence row with byte-identical field content
+# must not force a rerun on its own.
+_HASH_IRRELEVANT_FACT_KEYS = frozenset({
+    "days_until_expiry",
+    "_evidence_id",
+    "_document_version_id",
+})
+
 
 class AssessmentRunService:
     """
@@ -64,6 +83,9 @@ class AssessmentRunService:
         self.requirement_results = RequirementResultRepository(db)
         self.finding_revisions = FindingRevisionRepository(db)
         self.findings = FindingService(db)
+        self.evidence = EvidenceRepository(db)
+        self.document_fields = DocumentFieldRepository(db)
+        self.document_field_revisions = DocumentFieldRevisionRepository(db)
 
     def hash_facts(self, facts: dict[str, Any]) -> str:
         """
@@ -199,10 +221,20 @@ class AssessmentRunService:
         )
 
         if dimension == "DOCUMENTS":
-            self._run_documents_dimension(run, dimension_facts, rule_versions)
+            product_id = self._resolve_product_id(run.organization_id, run.product_market_state_id)
+            assembled = self._assemble_documents_dimension_facts(
+                run.organization_id, product_id, dimension_facts, rule_versions, run.started_at,
+            )
+            self._run_documents_dimension(run, dimension_facts, rule_versions, assembled)
             state = self._derive_dimension_state(
                 run.id, dimension, run.organization_id, run.product_market_state_id,
             )
+            # Hash the assembled real-facts snapshot, not the caller's
+            # raw submission - see compute_documents_reuse_hash, which
+            # MUST build this exact same quantity before a run even
+            # happens, or MarketReadinessService's reuse comparison
+            # would compare against a hash nothing else ever produces.
+            facts_for_hash = assembled["hash_snapshot"]
         else:
             resolved_subject_count = self._run_subject_list_dimension(
                 run, dimension, dimension_facts, rule_versions,
@@ -221,15 +253,47 @@ class AssessmentRunService:
                 state = self._derive_dimension_state(
                     run.id, dimension, run.organization_id, run.product_market_state_id,
                 )
+            facts_for_hash = dimension_facts
 
         assessment = DimensionAssessment(
             assessment_run_id=run.id,
             dimension=dimension,
             state=state,
-            submitted_facts_hash=self.hash_facts(dimension_facts),
+            submitted_facts_hash=self.hash_facts(facts_for_hash),
         )
         self.dimension_assessments.create(assessment)
         self.db.commit()
+
+    def compute_documents_reuse_hash(
+        self,
+        organization_id: UUID,
+        product_id: UUID,
+        regulatory_basis_release_id: UUID | None,
+        dimension_facts: dict[str, Any],
+        run_started_at: datetime | None,
+    ) -> str:
+        """
+        Lets MarketReadinessService decide DOCUMENTS reuse against real,
+        DB-resolved facts rather than the caller's raw submission - a
+        deliberate deviation from Claims/Label's own two reuse checks
+        (see CLAUDE.md "Assessment engine" and "Market readiness"):
+        DOCUMENTS is always hash-checked, never reused on pins alone,
+        because the ground truth it reads can change (a new document
+        gets uploaded and linked) without the caller submitting
+        anything at all this run. Builds the exact same hash_snapshot
+        _run_dimension itself writes when it actually runs this
+        dimension - the two must never drift apart, or reuse would
+        compare against a hash nothing else ever produces.
+        """
+        release = self.releases.get_by_id(regulatory_basis_release_id)
+        rule_versions = self.rule_versions.get_verified_active_for_dimension(
+            "DOCUMENTS",
+            release.rule_version_ids if release else [],
+        )
+        assembled = self._assemble_documents_dimension_facts(
+            organization_id, product_id, dimension_facts, rule_versions, run_started_at,
+        )
+        return self.hash_facts(assembled["hash_snapshot"])
 
     def _run_subject_list_dimension(
         self,
@@ -293,16 +357,26 @@ class AssessmentRunService:
         run: AssessmentRun,
         dimension_facts: dict[str, Any],
         rule_versions: list,
+        assembled: dict[str, Any] | None = None,
     ) -> None:
         """
         Documents' checklist is regulatory-basis-driven, not
         caller-driven (FR-08: "Checklist is generated from applicable
         Requirement Versions... users cannot remove a mandatory item";
         AC-FR-08-01) - unlike Claims/Label, where the caller enumerates
-        the full subject list. A required document_type the caller never
-        submitted is still evaluated (as empty facts), so a missing
-        mandatory document is actually detected rather than silently
-        skipped.
+        the full subject list. A required document_type with no
+        resolved subject at all (no linked Evidence, no caller fallback)
+        is still evaluated (as empty facts), so a missing mandatory
+        document is actually detected rather than silently skipped.
+
+        Real data first, caller-supplied JSON as a per-document_type
+        fallback - see _assemble_documents_dimension_facts, which does
+        the actual resolution/fallback decision and (when a checklist
+        item resolves more than one currently-linked document, e.g. two
+        COAs) the per-document subject expansion. `assembled` lets
+        _run_dimension pass in a resolution it already computed, so a
+        real run and its own reuse-hash never redo (or disagree about)
+        the same work twice in one call.
 
         Active rules are split by their linked RequirementVersion's
         subject_kind (see RequirementVersionSubjectKind) into two
@@ -311,21 +385,20 @@ class AssessmentRunService:
         against a consistency-check subject and vice versa, so running
         the wrong pool against the wrong subject would silently produce
         bogus UNKNOWN/FAIL_CLOSED results for rules never meant to apply
-        there.
+        there. Consistency checks stay entirely caller-supplied - no
+        Consistency Check mechanism exists yet (C8, unbuilt) - unaffected
+        by any of this.
         """
 
         product_facts = dimension_facts.get("product", {})
-        submitted_documents = {
-            item.get("document_type"): item
-            for item in dimension_facts.get("documents", [])
-        }
 
-        document_rules = [
-            rule_version
-            for rule_version in rule_versions
-            if rule_version.requirement_version.subject_kind
-            != RequirementVersionSubjectKind.CONSISTENCY_CHECK.value
-        ]
+        if assembled is None:
+            product_id = self._resolve_product_id(run.organization_id, run.product_market_state_id)
+            assembled = self._assemble_documents_dimension_facts(
+                run.organization_id, product_id, dimension_facts, rule_versions, run.started_at,
+            )
+
+        document_rules = assembled["document_rules"]
         consistency_rules = [
             rule_version
             for rule_version in rule_versions
@@ -333,25 +406,14 @@ class AssessmentRunService:
             == RequirementVersionSubjectKind.CONSISTENCY_CHECK.value
         ]
 
-        document_types: list[str] = []
-        seen: set[str] = set()
-        for rule_version in document_rules:
-            document_type = rule_version.requirement_version.obligation_type
-            if document_type not in seen:
-                seen.add(document_type)
-                document_types.append(document_type)
+        for document_type, subjects in assembled["resolved_subjects"].items():
+            for subject_key, facts in subjects:
+                subject_facts = {"product": product_facts, **facts}
 
-        for document_type in document_types:
-            submitted = submitted_documents.get(document_type)
-            subject_facts = {
-                "product": product_facts,
-                **self._build_document_facts(document_type, submitted, run.started_at),
-            }
-
-            for rule_version in document_rules:
-                if rule_version.requirement_version.obligation_type != document_type:
-                    continue
-                self._run_step(run, "DOCUMENTS", rule_version, document_type, subject_facts)
+                for rule_version in document_rules:
+                    if rule_version.requirement_version.obligation_type != document_type:
+                        continue
+                    self._run_step(run, "DOCUMENTS", rule_version, subject_key, subject_facts)
 
         for check in dimension_facts.get("consistency_checks", []):
             check_key = check.get("check_key")
@@ -363,6 +425,227 @@ class AssessmentRunService:
             for rule_version in consistency_rules:
                 self._run_step(run, "DOCUMENTS", rule_version, check_key, subject_facts)
 
+    def _resolve_product_id(
+        self,
+        organization_id: UUID,
+        product_market_state_id: UUID,
+    ) -> UUID | None:
+        state = self.product_market_states.get_by_id_only(organization_id, product_market_state_id)
+        return state.product_id if state else None
+
+    def _assemble_documents_dimension_facts(
+        self,
+        organization_id: UUID,
+        product_id: UUID | None,
+        dimension_facts: dict[str, Any],
+        rule_versions: list,
+        run_started_at: datetime | None,
+    ) -> dict[str, Any]:
+        """
+        Single source of truth for what the DOCUMENTS dimension actually
+        sees per checklist item - called both to actually run rules
+        (_run_documents_dimension) and, before that, to decide whether a
+        rerun is even needed (compute_documents_reuse_hash). The two
+        calls MUST stay in agreement: MarketReadinessService compares a
+        hash computed here (pre-run) against a hash stored from a real
+        run of this same method, so any divergence between the two call
+        sites would make reuse silently wrong. See CLAUDE.md "Assessment
+        engine".
+
+        Real Evidence-backed data wins per document_type, whole-hog -
+        never merged with caller-supplied fields for the same checklist
+        item. Only a document_type with ZERO currently-linked, VERIFIED
+        Evidence falls back to the caller's documents[] JSON, preserving
+        every existing test/TESTLAND fixture unchanged (neither has any
+        real Evidence rows to resolve, so they always hit the fallback).
+
+        Multiple currently-linked documents for one document_type (e.g.
+        two COAs) are each evaluated as their own subject, not merged or
+        arbitrarily reduced to one - dropping either would hide a real
+        compliance issue. subject_key stays exactly document_type when
+        exactly one document resolves (preserving Finding continuity/
+        dedup for the overwhelmingly common case), and becomes
+        f"{document_type}#{evidence_id}" only when there's more than
+        one - stable per link, not per position, so re-running doesn't
+        spuriously create new Findings unless the link itself changes.
+        """
+
+        submitted_documents = {
+            item.get("document_type"): item
+            for item in dimension_facts.get("documents", [])
+        }
+
+        document_rules = [
+            rule_version
+            for rule_version in rule_versions
+            if rule_version.requirement_version.subject_kind
+            != RequirementVersionSubjectKind.CONSISTENCY_CHECK.value
+        ]
+
+        document_types: list[str] = []
+        seen: set[str] = set()
+        for rule_version in document_rules:
+            document_type = rule_version.requirement_version.obligation_type
+            if document_type not in seen:
+                seen.add(document_type)
+                document_types.append(document_type)
+
+        resolved_subjects: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+        hash_snapshot: dict[str, Any] = {}
+
+        for document_type in document_types:
+            relevant_requirement_version_ids = {
+                rule_version.requirement_version_id
+                for rule_version in document_rules
+                if rule_version.requirement_version.obligation_type == document_type
+            }
+
+            evidence_list = (
+                self._resolve_document_evidence(
+                    organization_id, product_id, document_type, relevant_requirement_version_ids,
+                )
+                if product_id is not None
+                else []
+            )
+
+            if evidence_list:
+                subjects = []
+                for evidence in evidence_list:
+                    subject_key = (
+                        document_type if len(evidence_list) == 1
+                        else f"{document_type}#{evidence.id}"
+                    )
+                    facts = self._build_document_facts_from_evidence(document_type, evidence)
+                    facts = self._maybe_add_days_until_expiry(facts, run_started_at)
+                    subjects.append((subject_key, facts))
+            else:
+                submitted = submitted_documents.get(document_type)
+                facts = self._build_document_facts(document_type, submitted, run_started_at)
+                subjects = [(document_type, facts)]
+
+            resolved_subjects[document_type] = subjects
+            hash_snapshot[document_type] = [
+                self._facts_for_hashing(facts) for _subject_key, facts in subjects
+            ]
+
+        return {
+            "document_rules": document_rules,
+            "resolved_subjects": resolved_subjects,
+            "hash_snapshot": {
+                "documents": hash_snapshot,
+                "consistency_checks": dimension_facts.get("consistency_checks", []),
+                "product": dimension_facts.get("product", {}),
+            },
+        }
+
+    def _resolve_document_evidence(
+        self,
+        organization_id: UUID,
+        product_id: UUID,
+        document_type: str,
+        relevant_requirement_version_ids: set[UUID | None],
+    ) -> list:
+        """
+        Two-tier match (see CLAUDE.md "Assessment engine"): Evidence
+        explicitly scoped to one of this checklist item's own
+        requirement_version_ids wins outright; otherwise product-wide
+        Evidence (requirement_version_id IS NULL) is the fallback.
+        Evidence scoped to a DIFFERENT requirement is excluded entirely,
+        even if the document_type matches - it was deliberately linked
+        elsewhere and shouldn't leak into an unrelated checklist item
+        just because the two share a document type.
+        """
+
+        candidates = self.evidence.get_current_verified_for_product_and_document_type(
+            organization_id, product_id, document_type,
+        )
+        if not candidates:
+            return []
+
+        exact = [
+            evidence for evidence in candidates
+            if evidence.requirement_version_id in relevant_requirement_version_ids
+        ]
+        if exact:
+            return exact
+
+        return [evidence for evidence in candidates if evidence.requirement_version_id is None]
+
+    def _build_document_facts_from_evidence(
+        self,
+        document_type: str,
+        evidence,
+    ) -> dict[str, Any]:
+        """
+        Mirrors _build_document_facts' shape exactly (same document_type/
+        status/per-field {"value","confidence"} convention) so a
+        checklist item's rules never need to know or care which source
+        backed it. status is the DocumentVersion's own real status
+        (always VERIFIED - Evidence only ever links a VERIFIED version),
+        replacing the old synthetic "uploaded" marker; every rule
+        condition in this codebase only ever checks status via exists/
+        not_exists, never its literal value, so this is a strict
+        improvement, not a behavior change. _evidence_id/
+        _document_version_id are lineage-only - never referenced by any
+        rule condition, stripped before hashing (see
+        _facts_for_hashing) - kept in the real facts so a Finding/
+        StepRun stemming from this subject can be traced back to the
+        exact file.
+        """
+
+        facts: dict[str, Any] = {
+            "document_type": document_type,
+            "status": DocumentVersionStatus.VERIFIED.value,
+            "_evidence_id": str(evidence.id),
+            "_document_version_id": str(evidence.document_version_id),
+        }
+
+        location = None
+        for document_field in self.document_fields.get_all_for_version(evidence.document_version_id):
+            revision = self.document_field_revisions.get_latest(document_field.id)
+            if revision is None or revision.value is None:
+                continue
+            facts[document_field.field_key] = self._wrap_confidence_value(
+                revision.value, revision.confidence,
+            )
+            if location is None and revision.location is not None:
+                location = revision.location
+
+        if location is not None:
+            facts["location"] = location
+
+        return facts
+
+    def _wrap_confidence_value(self, value: Any, confidence: float | None) -> Any:
+        """
+        A value with no recorded confidence is a plain, unwrapped scalar -
+        not gated, treated the same as any fact with no confidence
+        semantics at all (Claims' plain facts). Only a value with an
+        EXPLICIT confidence is wrapped, and therefore confidence-gated by
+        the engine exactly like OCR output. Null must never reach the
+        engine inside a {"value","confidence"} dict -
+        condition_evaluator.py's own "malformed input" fail-safe would
+        silently force it to 0.0 (maximally untrustworthy), a materially
+        different claim than "nobody has recorded a confidence for this
+        yet" - manual entry's whole premise (see CLAUDE.md "Document
+        storage and versioning"). See CLAUDE.md "Assessment engine".
+        """
+        if confidence is None:
+            return value
+        return {"value": value, "confidence": confidence}
+
+    def _unwrap_confidence_value(self, raw: Any) -> tuple[Any, float | None]:
+        if isinstance(raw, dict) and "value" in raw and "confidence" in raw:
+            return raw.get("value"), raw.get("confidence")
+        return raw, None
+
+    def _facts_for_hashing(self, facts: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in facts.items()
+            if key not in _HASH_IRRELEVANT_FACT_KEYS
+        }
+
     def _build_document_facts(
         self,
         document_type: str,
@@ -370,27 +653,33 @@ class AssessmentRunService:
         run_started_at: datetime | None,
     ) -> dict[str, Any]:
         """
-        item is None when the caller never submitted anything for this
-        checklist document_type at all - facts then carry only
-        document_type, so a not_exists check on "status" (always present
-        whenever anything was genuinely uploaded) correctly detects
-        "missing entirely". This is the same null-value-omission
-        convention Label's _build_label_field_facts established: a field
-        whose value is None is omitted from facts rather than built as a
-        null-valued wrapper, which would make it structurally "exist".
+        The caller-supplied fallback path - only reached for a
+        document_type with no currently-linked, VERIFIED Evidence (see
+        _assemble_documents_dimension_facts). item is None when the
+        caller never submitted anything for this checklist document_type
+        at all - facts then carry only document_type, so a not_exists
+        check on "status" (always present whenever anything was
+        genuinely on file) correctly detects "missing entirely". Same
+        null-value-omission convention Label's _build_label_field_facts
+        established: a field whose value is None is omitted from facts
+        rather than built as a null-valued wrapper, which would make it
+        structurally "exist".
 
         Each extracted business field (manufacturer, expiry_date, ...)
-        arrives already {"value", "confidence"}-wrapped from the caller,
-        unlike Label's single flat value/confidence pair - a document has
+        arrives {"value", "confidence"}-shaped from the caller, unlike
+        Label's single flat value/confidence pair - a document has
         several independently-extracted fields at once, so each gets its
-        own wrapper directly rather than one shared indirection key.
+        own wrapper directly rather than one shared indirection key. A
+        null/absent confidence unwraps to a plain value - see
+        _wrap_confidence_value - the same rule the real-evidence path
+        uses, so the two stay behaviorally consistent for callers who
+        happen to submit confidence: null themselves.
 
-        expiry_date additionally yields a derived days_until_expiry fact,
-        computed here (not in the engine, which must stay a pure function
-        of condition+facts to keep StepRun replay deterministic - see
-        CLAUDE.md) from the run's own started_at, not wall-clock now().
-        It inherits expiry_date's own confidence: the day-count arithmetic
-        itself adds no uncertainty beyond what the OCR read already carries.
+        expiry_date additionally yields a derived days_until_expiry fact
+        (see _maybe_add_days_until_expiry) - computed here, not in the
+        engine, which must stay a pure function of condition+facts to
+        keep StepRun replay deterministic (see CLAUDE.md), from the
+        run's own started_at, not wall-clock now().
         """
 
         if item is None:
@@ -406,18 +695,31 @@ class AssessmentRunService:
                 continue
             if not isinstance(field_value, dict) or field_value.get("value") is None:
                 continue
-            facts[field_key] = {
-                "value": field_value.get("value"),
-                "confidence": field_value.get("confidence"),
-            }
+            facts[field_key] = self._wrap_confidence_value(
+                field_value.get("value"), field_value.get("confidence"),
+            )
 
-        if "expiry_date" in facts and run_started_at is not None:
-            days = self._compute_days_until_expiry(facts["expiry_date"]["value"], run_started_at)
-            if days is not None:
-                facts["days_until_expiry"] = {
-                    "value": days,
-                    "confidence": facts["expiry_date"]["confidence"],
-                }
+        return self._maybe_add_days_until_expiry(facts, run_started_at)
+
+    def _maybe_add_days_until_expiry(
+        self,
+        facts: dict[str, Any],
+        run_started_at: datetime | None,
+    ) -> dict[str, Any]:
+        """
+        Shared by both the real-evidence and caller-fallback paths, so
+        expiry banding (FR-08's 90/60/30/7-day rules) works identically
+        regardless of source. Mirrors expiry_date's own wrapped-or-plain
+        shape - inherits its confidence when it has one, stays a plain
+        int when expiry_date itself was unwrapped (null confidence).
+        """
+        if "expiry_date" not in facts or run_started_at is None:
+            return facts
+
+        expiry_value, expiry_confidence = self._unwrap_confidence_value(facts["expiry_date"])
+        days = self._compute_days_until_expiry(expiry_value, run_started_at)
+        if days is not None:
+            facts["days_until_expiry"] = self._wrap_confidence_value(days, expiry_confidence)
 
         return facts
 

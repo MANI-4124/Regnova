@@ -1,8 +1,26 @@
 from __future__ import annotations
 
+import pytest
+
+from app.core.dependencies import get_document_storage
+from app.main import app
 from app.modules.market_readiness.service import MarketReadinessService
+from app.storage import LocalFilesystemStorage
 
 # --- Synthetic Market Readiness fixtures only - never real seeded content ---
+
+
+@pytest.fixture()
+def storage(tmp_path):
+    """
+    Overrides get_document_storage the same way the `client` fixture
+    overrides get_db_session - see tests/test_document.py's own copy of
+    this fixture for the full reasoning.
+    """
+    backend = LocalFilesystemStorage(tmp_path)
+    app.dependency_overrides[get_document_storage] = lambda: backend
+    yield backend
+    app.dependency_overrides.pop(get_document_storage, None)
 
 
 def _create_product(client, tenant, name="Widget"):
@@ -701,3 +719,117 @@ def test_compute_gate_g4_and_g5_are_unreachable_even_when_all_conditions_met(db)
     assert gate == "G3"
     assert "G4_UNREACHABLE_NO_APPROVAL_MODEL" in reasons
     assert "HUMAN_REVIEW_REQUIRED" not in reasons
+
+
+# --- DOCUMENTS reuse against real Evidence, not the caller's submission ---
+
+
+def _create_document(client, tenant, document_type="GMP_CERTIFICATE"):
+    response = client.post(
+        "/documents", json={"document_type": document_type}, headers=tenant["headers"],
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _upload_document_version(client, tenant, document_id, content=b"%PDF-1.4\n%mock cert\n%%EOF"):
+    files = {"file": ("cert.pdf", content, "application/pdf")}
+    response = client.post(
+        f"/documents/{document_id}/versions", files=files, headers=tenant["headers"],
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _verify_document_version(client, tenant, document_id, version_id):
+    response = client.post(
+        f"/documents/{document_id}/versions/{version_id}/verify",
+        json={}, headers=tenant["headers"],
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _link_evidence(client, tenant, document_version_id, product_id):
+    response = client.post(
+        "/evidence",
+        json={"document_version_id": document_version_id, "product_id": product_id},
+        headers=tenant["headers"],
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_documents_reuse_invalidated_by_new_evidence_even_when_key_omitted(
+    client, tenant_a, regulatory_content_writer, storage,
+):
+    """
+    Explicitly required: DOCUMENTS' ground truth lives in the database,
+    not in what a Market Readiness request happens to submit - a
+    customer uploading and linking a brand-new certificate must
+    invalidate reuse even though `input_facts` never mentions
+    "DOCUMENTS" at all. Includes the control (a rerun with truly nothing
+    changed still reuses) so the "reused is False" assertion below
+    isn't trivially true because reuse never works at all.
+    """
+
+    requirement, requirement_version = _create_requirement_version(
+        client, regulatory_content_writer,
+        dimension="DOCUMENTS", obligation_type="gmp_certificate",
+        canonical_statement="A current GMP certificate must be on file.",
+    )
+    requirement_version = _activate_requirement_version(
+        client, regulatory_content_writer, requirement, requirement_version,
+    )
+    # REQUIREMENT_RESULT, not FINDING_PROPOSAL - a proposed Finding stays
+    # PROPOSED (open) across runs regardless of what a later run finds,
+    # which would keep the dimension NON_COMPLIANT forever once the
+    # first (missing-document) run proposes one, and mask the actual
+    # thing this test checks (does the third run's real evidence get
+    # picked up at all). REQUIREMENT_RESULT carries no such persistence.
+    rule, rule_version = _create_rule_version(
+        client, regulatory_content_writer, requirement_version["id"],
+        condition={"op": "exists", "field": "status"},
+        output_type="REQUIREMENT_RESULT",
+        unknown_behavior="FAIL_CLOSED",
+    )
+    rule_version = _activate_rule_version(client, regulatory_content_writer, rule, rule_version)
+    _create_active_release(
+        client, regulatory_content_writer,
+        rule_version_ids=[rule_version["id"]], requirement_version_ids=[requirement_version["id"]],
+    )
+
+    product = _create_product(client, tenant_a)
+    version = _create_version(client, tenant_a, product["id"])
+    _publish_version(client, tenant_a, product["id"], version["id"])
+    state = _create_state(client, tenant_a, product["id"], version["id"])
+
+    first = _run_market_readiness(client, tenant_a, state["id"], {}).json()
+    # Missing document -> exists("status") fails to match -> NOT_SATISFIED.
+    assert first["dimension_summary"]["DOCUMENTS"]["state"] == "NON_COMPLIANT"
+
+    # Control: rerun with truly nothing changed - must reuse, proving
+    # the mechanism isn't just "always rerun DOCUMENTS unconditionally".
+    second = _run_market_readiness(client, tenant_a, state["id"], {}).json()
+    assert second["dimension_summary"]["DOCUMENTS"]["reused"] is True
+    assert (
+        second["dimension_summary"]["DOCUMENTS"]["dimension_assessment_id"]
+        == first["dimension_summary"]["DOCUMENTS"]["dimension_assessment_id"]
+    )
+
+    # Upload, verify and link a real certificate - the request body sent
+    # to /market-readiness-runs below never mentions DOCUMENTS at all.
+    document = _create_document(client, tenant_a)
+    doc_version = _upload_document_version(client, tenant_a, document["id"])
+    doc_version = _verify_document_version(client, tenant_a, document["id"], doc_version["id"])
+    _link_evidence(client, tenant_a, doc_version["id"], product["id"])
+
+    third = _run_market_readiness(client, tenant_a, state["id"], {}).json()
+    assert third["dimension_summary"]["DOCUMENTS"]["reused"] is False
+    assert (
+        third["dimension_summary"]["DOCUMENTS"]["dimension_assessment_id"]
+        != second["dimension_summary"]["DOCUMENTS"]["dimension_assessment_id"]
+    )
+    # The document is no longer missing - exists("status") now matches,
+    # so the requirement is satisfied and the dimension clears.
+    assert third["dimension_summary"]["DOCUMENTS"]["state"] == "COMPLIANT"

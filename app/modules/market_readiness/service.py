@@ -207,8 +207,9 @@ class MarketReadinessService:
 
     def _resolve_dimension(self, run, state, dimension_value, input_facts, forced_rerun_dimensions):
         """
-        Two distinct reuse checks, not one - see CLAUDE.md "Market
-        readiness" for the full reasoning:
+        Two distinct reuse checks for Claims/Label/every other
+        caller-driven dimension - see CLAUDE.md "Market readiness" for
+        the full reasoning:
 
         - Key absent (dimension_value not in forced_rerun_dimensions):
           the caller submitted nothing this run for this dimension.
@@ -219,11 +220,30 @@ class MarketReadinessService:
           content; now identical resupply (matching pins AND a matching
           submitted_facts_hash) still reuses safely, and only genuinely
           different content falls through to a real rerun.
+
+        DOCUMENTS is a deliberate THIRD shape, not a variant of either
+        of the above - see CLAUDE.md "Assessment engine". Its ground
+        truth lives in the database (Evidence/DocumentField), not in
+        what this request happens to submit, so "the caller didn't
+        resupply this key" carries no information about whether
+        anything actually changed - a customer can upload and link a
+        brand-new certificate without ever touching this endpoint's
+        request body. DOCUMENTS is therefore always hash-checked against
+        real, DB-resolved facts, regardless of forced_rerun_dimensions.
         """
 
         dimension_facts = input_facts.get(dimension_value, {})
 
-        if dimension_value not in forced_rerun_dimensions:
+        if dimension_value == "DOCUMENTS":
+            facts_hash = self.assessment_runs.compute_documents_reuse_hash(
+                state.organization_id, state.product_id, state.regulatory_basis_release_id,
+                dimension_facts, run.started_at,
+            )
+            reusable = self.dimension_assessments.get_latest_reusable(
+                state.id, dimension_value, state.product_version_id, state.regulatory_basis_release_id,
+                submitted_facts_hash=facts_hash,
+            )
+        elif dimension_value not in forced_rerun_dimensions:
             reusable = self.dimension_assessments.get_latest_reusable(
                 state.id, dimension_value, state.product_version_id, state.regulatory_basis_release_id,
             )
