@@ -5,6 +5,7 @@ from fastapi import Request
 from sqlalchemy.orm import Session
 
 from app.core.settings import get_settings
+from app.scanning import ClamAVScanner, MalwareScanner, NoOpScanner
 from app.storage import DocumentStorage, LocalFilesystemStorage
 
 
@@ -53,4 +54,29 @@ def get_document_storage() -> DocumentStorage:
 
     raise RuntimeError(
         f"Unknown document_storage_backend: {settings.document_storage_backend!r}",
+    )
+
+
+def get_malware_scanner() -> MalwareScanner:
+    """
+    Same plain Depends()-based, override-able shape as
+    get_document_storage - tests replace this via
+    app.dependency_overrides instead of needing a real ClamAV
+    container. See CLAUDE.md "Malware scanning".
+    """
+
+    settings = get_settings()
+
+    if settings.malware_scanner_backend == "noop":
+        return NoOpScanner()
+
+    if settings.malware_scanner_backend == "clamav":
+        return ClamAVScanner(
+            host=settings.clamav_host,
+            port=settings.clamav_port,
+            timeout=settings.clamav_timeout_seconds,
+        )
+
+    raise RuntimeError(
+        f"Unknown malware_scanner_backend: {settings.malware_scanner_backend!r}",
     )

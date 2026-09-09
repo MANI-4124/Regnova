@@ -12,6 +12,7 @@ from app.modules.audit.repository import OutboxRepository
 from app.modules.document.exceptions import DocumentNotFound
 from app.modules.document.repository import DocumentRepository
 from app.modules.evidence.repository import EvidenceRepository
+from app.scanning import MalwareScanner, ScanOutcome, ScannerUnavailable
 from app.storage import DocumentStorage
 
 from .exceptions import (
@@ -107,10 +108,12 @@ class DocumentVersionService:
         self,
         db: Session,
         storage: DocumentStorage,
+        scanner: MalwareScanner,
         settings: Settings | None = None,
     ):
         self.db = db
         self.storage = storage
+        self.scanner = scanner
         self.settings = settings or get_settings()
         self.documents = DocumentRepository(db)
         self.repository = DocumentVersionRepository(db)
@@ -195,7 +198,10 @@ class DocumentVersionService:
             original_filename=filename,
             content_type=content_type,
             size_bytes=len(content),
-            status=DocumentVersionStatus.REVIEW_REQUIRED.value,
+            # SCANNING, not REVIEW_REQUIRED - a version now only reaches
+            # REVIEW_REQUIRED after a clean scan. See CLAUDE.md "Malware
+            # scanning".
+            status=DocumentVersionStatus.SCANNING.value,
             supersedes_id=current.id if current else None,
             uploaded_by_user_id=actor_user_id,
             notes=notes,
@@ -242,9 +248,142 @@ class DocumentVersionService:
             actor_user_id=actor_user_id,
         )
 
+        # Committed here, BEFORE the scan runs - mirrors AssessmentRun.RUNNING/
+        # Export.GENERATING's own "a crash must still leave a visible,
+        # terminal-or-retryable record" precedent. SCANNING now has a
+        # genuine, measurable duration (a network round trip, possibly
+        # a timeout), unlike the excluded UPLOADING state.
         self.db.commit()
 
+        self._run_scan_and_transition(
+            version,
+            content,
+            organization_id=organization_id,
+            document_id=document_id,
+            actor_user_id=actor_user_id,
+            correlation_id=correlation_id,
+        )
+
         return version
+
+    def retry_scan(
+        self,
+        organization_id: UUID,
+        document_id: UUID,
+        version_id: UUID,
+        *,
+        actor_user_id: UUID | None = None,
+        correlation_id: str | None = None,
+    ) -> DocumentVersion:
+        """
+        AC-FR-04-03: retried idempotently, without creating another
+        document version - re-reads the SAME stored bytes via checksum
+        (content-addressed, never re-uploaded) and re-attempts the scan
+        on the SAME row. Valid from FAILED (the scanner couldn't be
+        reached last time) or SCANNING (a version stuck there from a
+        crashed request is operationally the same problem - a human
+        needs to kick it again either way, see CLAUDE.md "Malware
+        scanning").
+        """
+        version = self.get_by_id(organization_id, document_id, version_id)
+
+        if version.status not in (
+            DocumentVersionStatus.FAILED.value,
+            DocumentVersionStatus.SCANNING.value,
+        ):
+            raise DocumentVersionTransitionNotAllowed(
+                "retry-scan is only allowed while the document version "
+                "is FAILED or SCANNING.",
+            )
+
+        content = self.storage.get(version.checksum)
+
+        self._run_scan_and_transition(
+            version,
+            content,
+            organization_id=organization_id,
+            document_id=document_id,
+            actor_user_id=actor_user_id,
+            correlation_id=correlation_id,
+        )
+
+        return version
+
+    def _run_scan_and_transition(
+        self,
+        version: DocumentVersion,
+        content: bytes,
+        *,
+        organization_id: UUID,
+        document_id: UUID,
+        actor_user_id: UUID | None,
+        correlation_id: str | None,
+    ) -> None:
+        """
+        The one place SCANNING resolves to REVIEW_REQUIRED/QUARANTINED/
+        FAILED, called from both create() (the first attempt) and
+        retry_scan() (any subsequent one) - so the transition logic
+        itself never has to know which caller it's serving. Fail-
+        closed throughout: a version only ever reaches REVIEW_REQUIRED
+        after an actual CLEAN result, never as a side effect of the
+        scanner being unavailable. See CLAUDE.md "Malware scanning".
+        """
+        from_status = version.status
+
+        try:
+            result = self.scanner.scan(content)
+        except ScannerUnavailable as exc:
+            version.status = DocumentVersionStatus.FAILED.value
+            version.scan_error = str(exc)
+            self.repository.update(version)
+
+            # New event type, diverging from the AssessmentRun/Export
+            # "no event on FAILED" precedent - see CLAUDE.md "Malware
+            # scanning": document quarantine/scan backlog is a named P1
+            # operational signal the spec calls out directly, unlike
+            # export-generation failures.
+            self.outbox.append(
+                organization_id=organization_id,
+                event_type="DocumentVersionScanFailed",
+                schema_version=1,
+                payload={
+                    "document_id": str(document_id),
+                    "document_version_id": str(version.id),
+                    "from_status": from_status,
+                    "scan_error": version.scan_error,
+                },
+                correlation_id=correlation_id,
+                actor_user_id=actor_user_id,
+            )
+            self.db.commit()
+            return
+
+        if result.outcome == ScanOutcome.INFECTED:
+            version.status = DocumentVersionStatus.QUARANTINED.value
+            version.malware_signature = result.signature_name
+            version.scan_error = None
+            version.review_note = (
+                f"Automatically quarantined: malware detected ({result.signature_name})."
+            )
+            self.repository.update(version)
+            # reviewed_by_user_id/reviewed_at deliberately stay null -
+            # no human decided this, same "engine-authored, no actor"
+            # precedent as FindingRevision.decided_by_user_id. Reuses
+            # the existing DocumentVersionQuarantined event/builder -
+            # no new tier/redaction logic needed, this IS a quarantine,
+            # just an automated one.
+            self._publish_reviewed(
+                "DocumentVersionQuarantined", version, organization_id=organization_id,
+                document_id=document_id, from_status=from_status,
+                note=version.review_note, actor_user_id=None, correlation_id=correlation_id,
+            )
+            self.db.commit()
+            return
+
+        version.status = DocumentVersionStatus.REVIEW_REQUIRED.value
+        version.scan_error = None
+        self.repository.update(version)
+        self.db.commit()
 
     def _require_reviewable(self, version: DocumentVersion) -> None:
         if version.status != DocumentVersionStatus.REVIEW_REQUIRED.value:

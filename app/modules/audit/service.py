@@ -299,6 +299,7 @@ AUDIT_BUILDERS: dict[str, Callable[[Session, Any], AuditEventDraft]] = {
     "DocumentVersionVerified": _build_document_customer_visible,
     "DocumentVersionRejected": _build_document_customer_visible,
     "DocumentVersionQuarantined": _build_document_customer_visible,
+    "DocumentVersionScanFailed": _build_document_customer_visible,
     "DocumentFieldRevised": _build_document_customer_visible,
     "EvidenceLinked": _build_evidence_customer_visible,
     "EvidenceUnlinked": _build_evidence_customer_visible,

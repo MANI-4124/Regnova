@@ -29,6 +29,8 @@ class DocumentVersionResponse(BaseModel):
     reviewed_by_user_id: UUID | None
     reviewed_at: datetime | None
     review_note: str | None
+    malware_signature: str | None
+    scan_error: str | None
     notes: str | None
     created_at: datetime
     updated_at: datetime

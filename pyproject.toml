@@ -18,6 +18,12 @@ dependencies = [
     "email-validator>=2.0",
     "pyyaml>=6.0",
     "python-multipart>=0.0.9",
+    # Malware scanning (AC-FR-04-01) - a pure-Python TCP client for
+    # clamd's INSTREAM protocol, no C extension, so no Windows-specific
+    # build fragility (unlike python-magic, deliberately avoided
+    # elsewhere in this codebase for exactly that reason). See
+    # app/scanning/ and CLAUDE.md "Malware scanning".
+    "clamd>=1.0.2",
 ]
 
 [project.optional-dependencies]

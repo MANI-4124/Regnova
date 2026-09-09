@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.dependencies import get_document_storage
+from app.core.dependencies import get_document_storage, get_malware_scanner
 from app.core.settings import get_settings
 from app.main import app
+from app.modules.audit.models import AuditVisibilityTier
+from app.modules.audit.repository import AuditEventRepository
+from app.modules.audit.worker import dispatch_pending_events
 from app.modules.auth.jwt import create_access_token
 from app.modules.auth.security import hash_password
 from app.modules.role.models import Role
 from app.modules.user.models import User
+from app.scanning import MalwareScanner, ScanOutcome, ScanResult, ScannerUnavailable
 from app.storage import LocalFilesystemStorage
 
 PDF_BYTES = b"%PDF-1.4\n%mock gmp certificate content\n%%EOF"
@@ -27,6 +31,46 @@ def storage(tmp_path):
     app.dependency_overrides[get_document_storage] = lambda: backend
     yield backend
     app.dependency_overrides.pop(get_document_storage, None)
+
+
+class _FakeScanner(MalwareScanner):
+    """
+    A test-controllable MalwareScanner, installed via
+    app.dependency_overrides the same way `storage` overrides
+    get_document_storage. Tests that don't install one get the real
+    dependency resolution (Settings.malware_scanner_backend defaults
+    to "noop", so NoOpScanner - always CLEAN, which is why every
+    pre-existing test in this file needed no changes when SCANNING was
+    added to the pipeline).
+    """
+
+    def __init__(self, outcome=ScanOutcome.CLEAN, signature_name=None, unavailable=False):
+        self.outcome = outcome
+        self.signature_name = signature_name
+        self.unavailable = unavailable
+        self.calls = 0
+
+    def scan(self, content: bytes) -> ScanResult:
+        self.calls += 1
+        if self.unavailable:
+            raise ScannerUnavailable("simulated ClamAV outage")
+        return ScanResult(outcome=self.outcome, signature_name=self.signature_name)
+
+
+@pytest.fixture()
+def scanner_override():
+    def _install(scanner):
+        app.dependency_overrides[get_malware_scanner] = lambda: scanner
+        return scanner
+
+    yield _install
+    app.dependency_overrides.pop(get_malware_scanner, None)
+
+
+def _create_product(client, tenant, name="Widget"):
+    response = client.post("/products", json={"name": name}, headers=tenant["headers"])
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
 def _employee_headers(db, tenant):
@@ -361,6 +405,165 @@ def test_fields_locked_once_document_version_verified(client, tenant_a, storage)
     response = client.put(
         f"/documents/{document['id']}/versions/{version['id']}/fields/expiry_date",
         json={"value": "2027-06-30"},
+        headers=tenant_a["headers"],
+    )
+    assert response.status_code == 409
+
+
+# --- Malware scanning (AC-FR-04-01) -------------------------------------
+
+
+def test_clean_upload_lands_in_review_required(client, tenant_a, storage, scanner_override):
+    fake = scanner_override(_FakeScanner(outcome=ScanOutcome.CLEAN))
+    document = _create_document(client, tenant_a)
+
+    response = _upload_version(client, tenant_a, document["id"])
+    assert response.status_code == 200
+    version = response.json()
+
+    assert version["status"] == "REVIEW_REQUIRED"
+    assert version["malware_signature"] is None
+    assert version["scan_error"] is None
+    assert fake.calls == 1
+
+
+def test_infected_file_auto_quarantines_without_human_involvement(client, tenant_a, storage, scanner_override):
+    scanner_override(_FakeScanner(outcome=ScanOutcome.INFECTED, signature_name="Test.Signature-1"))
+    document = _create_document(client, tenant_a)
+
+    response = _upload_version(client, tenant_a, document["id"])
+    assert response.status_code == 200
+    version = response.json()
+
+    assert version["status"] == "QUARANTINED"
+    assert version["malware_signature"] == "Test.Signature-1"
+    # No human ever reviewed this - auto-quarantine, not a manual
+    # quarantine() call.
+    assert version["reviewed_by_user_id"] is None
+    assert version["reviewed_at"] is None
+    assert "Automatically quarantined" in version["review_note"]
+
+    # Manual quarantine() itself is only reachable from REVIEW_REQUIRED
+    # (this version never passed through it) - confirms the auto path
+    # bypassed human review entirely, not just skipped a UI step.
+    manual = client.post(
+        f"/documents/{document['id']}/versions/{version['id']}/quarantine",
+        json={"note": "manual double-check"},
+        headers=tenant_a["headers"],
+    )
+    assert manual.status_code == 409
+
+
+def test_scanner_unavailable_lands_version_in_failed(client, tenant_a, storage, scanner_override):
+    scanner_override(_FakeScanner(unavailable=True))
+    document = _create_document(client, tenant_a)
+
+    # Fail-closed, but the upload itself still succeeds - bytes are
+    # captured (content-addressed storage doesn't care about scan
+    # status), so a customer doesn't have to re-upload once ClamAV
+    # recovers. Only PROGRESS through the pipeline is blocked.
+    response = _upload_version(client, tenant_a, document["id"])
+    assert response.status_code == 200
+    version = response.json()
+
+    assert version["status"] == "FAILED"
+    assert version["scan_error"]
+    assert version["malware_signature"] is None
+
+
+def test_document_version_scan_failed_event_emitted(client, db, tenant_a, storage, scanner_override):
+    scanner_override(_FakeScanner(unavailable=True))
+    document = _create_document(client, tenant_a)
+    _upload_version(client, tenant_a, document["id"])
+
+    dispatch_pending_events(db)
+
+    events = AuditEventRepository(db).get_all(
+        organization_id=tenant_a["organization"].id,
+        visibility_tiers=[AuditVisibilityTier.CUSTOMER_VISIBLE.value],
+        event_type="DocumentVersionScanFailed",
+    )
+    assert len(events) == 1
+    assert events[0].payload["scan_error"]
+
+
+def test_failed_version_cannot_reach_verified_or_be_linked_as_evidence_without_rescan(
+    client, tenant_a, storage, scanner_override,
+):
+    """
+    The exact AC-FR-04-01 gate this ticket exists to close: a version
+    that failed to scan must never reach VERIFIED (and therefore must
+    never be linkable as Evidence) through any path other than a
+    successful rescan.
+    """
+    fake = scanner_override(_FakeScanner(unavailable=True))
+    document = _create_document(client, tenant_a)
+    product = _create_product(client, tenant_a)
+
+    version = _upload_version(client, tenant_a, document["id"]).json()
+    assert version["status"] == "FAILED"
+
+    # verify() requires REVIEW_REQUIRED - FAILED is refused outright.
+    verify_attempt = _verify_version(client, tenant_a, document["id"], version["id"])
+    assert verify_attempt.status_code == 409
+
+    # Evidence.create() requires VERIFIED - also refused.
+    evidence_attempt = client.post(
+        "/evidence",
+        json={"document_version_id": version["id"], "product_id": product["id"]},
+        headers=tenant_a["headers"],
+    )
+    assert evidence_attempt.status_code == 409
+
+    # Now the scanner recovers - retry-scan, same version, no new row.
+    fake.unavailable = False
+    fake.outcome = ScanOutcome.CLEAN
+
+    retry_resp = client.post(
+        f"/documents/{document['id']}/versions/{version['id']}/retry-scan",
+        headers=tenant_a["headers"],
+    )
+    assert retry_resp.status_code == 200
+    retried = retry_resp.json()
+    assert retried["id"] == version["id"]  # same version, not a new one (AC-FR-04-03)
+    assert retried["status"] == "REVIEW_REQUIRED"
+    assert retried["scan_error"] is None
+
+    versions_after = client.get(f"/documents/{document['id']}/versions", headers=tenant_a["headers"]).json()
+    assert len(versions_after) == 1  # still just one version
+
+    verify_resp = _verify_version(client, tenant_a, document["id"], version["id"])
+    assert verify_resp.status_code == 200
+    assert verify_resp.json()["status"] == "VERIFIED"
+
+    evidence_resp = client.post(
+        "/evidence",
+        json={"document_version_id": version["id"], "product_id": product["id"]},
+        headers=tenant_a["headers"],
+    )
+    assert evidence_resp.status_code == 200
+
+
+def test_retry_scan_requires_manager(client, db, tenant_a, storage, scanner_override):
+    scanner_override(_FakeScanner(unavailable=True))
+    document = _create_document(client, tenant_a)
+    version = _upload_version(client, tenant_a, document["id"]).json()
+
+    response = client.post(
+        f"/documents/{document['id']}/versions/{version['id']}/retry-scan",
+        headers=_employee_headers(db, tenant_a),
+    )
+    assert response.status_code == 403
+
+
+def test_retry_scan_not_allowed_from_review_required(client, tenant_a, storage, scanner_override):
+    scanner_override(_FakeScanner(outcome=ScanOutcome.CLEAN))
+    document = _create_document(client, tenant_a)
+    version = _upload_version(client, tenant_a, document["id"]).json()
+    assert version["status"] == "REVIEW_REQUIRED"
+
+    response = client.post(
+        f"/documents/{document['id']}/versions/{version['id']}/retry-scan",
         headers=tenant_a["headers"],
     )
     assert response.status_code == 409

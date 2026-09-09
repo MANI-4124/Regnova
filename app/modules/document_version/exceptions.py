@@ -58,10 +58,15 @@ class DocumentVersionTransitionNotAllowed(ConflictException):
     verify()/reject()/quarantine() are only reachable from
     REVIEW_REQUIRED - not from VERIFIED/REJECTED/QUARANTINED, and there
     is no un-quarantine/un-reject path in this pass (see CLAUDE.md).
+    retry_scan() reuses this same exception for its own, different
+    precondition (SCANNING or FAILED only) - same underlying shape
+    ("wrong starting status for this transition"), a distinct message
+    passed in rather than a second near-identical exception class.
     """
 
-    def __init__(self):
+    def __init__(self, message: str | None = None):
         super().__init__(
-            "This transition is only allowed while the document version "
+            message
+            or "This transition is only allowed while the document version "
             "is REVIEW_REQUIRED."
         )

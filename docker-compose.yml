@@ -1,0 +1,98 @@
+# Local development services - Postgres and ClamAV. The backend itself
+# runs on the host directly (`uvicorn app.main:app --reload`, see
+# CLAUDE.md), not inside this compose file.
+#
+# `name: regnova` is deliberate, not decorative: if you already run
+# Postgres via a differently-named/older compose setup for this
+# project, Compose's default project name is derived from the
+# directory a compose file lives in (`backend`, here) - pinning it to
+# `regnova` is what lets `docker compose up` here recognize and adopt
+# an existing `regnova-postgres` container/volume from a prior setup
+# instead of creating a second, conflicting one alongside it. If you've
+# never run this project's Postgres via Compose before, this has no
+# effect beyond naming.
+#
+# Quick start:
+#   docker compose up -d
+#   docker compose logs -f clamav
+#   # first start: ClamAV downloads virus definitions (~200-300 MB)
+#   # before it will accept connections - see the note below, this is
+#   # NOT instant and is not a sign anything is broken. The container's
+#   # own healthcheck (built into the image, not redefined here) only
+#   # reports healthy once clamd is actually ready.
+#
+# To use ClamAV once it's up, set in backend/.env:
+#   MALWARE_SCANNER_BACKEND=clamav
+# (defaults to "noop" - see CLAUDE.md "Malware scanning" for why that
+# default is deliberate, not just a convenience default.)
+
+name: regnova
+
+services:
+  postgres:
+    image: postgres:17
+    container_name: regnova-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: regnova
+    ports:
+      - "5432:5432"
+    volumes:
+      # Named `postgres_data` here, not `regnova_postgres_data` -
+      # Compose already prefixes every volume with the project name
+      # (`regnova_`, from `name: regnova` above), so naming the KEY
+      # `regnova_postgres_data` would double the prefix into
+      # `regnova_regnova_postgres_data`, a DIFFERENT, empty volume,
+      # silently orphaning any real data already sitting in the
+      # correctly-named `regnova_postgres_data`. Confirmed by actually
+      # running this file once with the wrong name, catching exactly
+      # that failure mode, and fixing it - not a hypothetical.
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  clamav:
+    image: clamav/clamav:stable
+    container_name: regnova-clamav
+    ports:
+      - "3310:3310"
+    volumes:
+      # Replaces the stock clamd.conf entirely - a verified, minimally
+      # patched copy of the real one, not hand-written. See that
+      # file's own header comment for exactly what changed and why,
+      # including a correction of the commonly-assumed-but-stale
+      # "25 MB default" claim - this image's own compiled default is
+      # already 100 MiB, verified via clamconf against this exact
+      # image digest.
+      - ./docker/clamav/clamd.conf:/etc/clamav/clamd.conf:ro
+      # Named volume so freshclam's downloaded virus database survives
+      # a container restart - without this, EVERY restart repeats the
+      # multi-minute first-start definition download below.
+      - clamav_data:/var/lib/clamav
+    # IMPORTANT, not a formality: on first start (or whenever the named
+    # volume above is empty), the container downloads the virus
+    # definition database (~200-300 MB) before clamd will accept ANY
+    # connection - routinely several minutes, longer on a slow
+    # connection. Until it completes, every scan attempt from the
+    # backend gets connection-refused, which this app's ClamAVScanner
+    # reports as ScannerUnavailable - landing uploads in FAILED. That
+    # is NOT a bug or a misconfiguration if it happens right after
+    # `docker compose up` - it means ClamAV is still downloading its
+    # database. Check `docker compose logs clamav` (or `docker inspect
+    # --format '{{.State.Health.Status}}' <container>`) and wait for
+    # healthy before uploading anything through the real backend.
+    #
+    # No healthcheck defined here - the image ships its own correct
+    # one (`clamdcheck.sh`, with a 6-minute start_period already baked
+    # in to cover the download above), verified directly against this
+    # image (`docker inspect clamav/clamav:stable`) rather than
+    # guessed. Overriding it with a hand-rolled command risked getting
+    # it subtly wrong for no benefit.
+
+volumes:
+  postgres_data:
+  clamav_data:

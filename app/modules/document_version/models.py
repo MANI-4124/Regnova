@@ -28,28 +28,37 @@ _JSON = JSON().with_variant(JSONB(), "postgresql")
 
 class DocumentVersionStatus(str, Enum):
     """
-    Deliberately narrowed from FR-04's own eight-state list
-    (Uploading -> Scanning -> Processing -> Extracted -> Review
-    Required -> Verified; alternate terminal Rejected/Failed/
-    Quarantined) - see CLAUDE.md "Document storage and versioning".
+    Narrowed from FR-04's own eight-state list (Uploading -> Scanning
+    -> Processing -> Extracted -> Review Required -> Verified;
+    alternate terminal Rejected/Failed/Quarantined) - see CLAUDE.md
+    "Document storage and versioning" and "Malware scanning".
 
-    SCANNING/PROCESSING/EXTRACTED/FAILED all describe an automated
-    scan/OCR/extraction pipeline that doesn't exist in this codebase
-    yet and can't be reached by anything built here - modeling them now
-    would be four states nothing can ever transition into or out of.
+    SCANNING and FAILED are now real (added alongside malware scanning -
+    see CLAUDE.md "Malware scanning"): SCANNING has a genuine,
+    measurable duration (a synchronous network round trip to the
+    scanner, possibly a timeout), unlike UPLOADING below, and FAILED is
+    reachable when the scanner itself couldn't be reached or return a
+    conclusive answer. QUARANTINED is now reachable two ways: manually
+    (quarantine(), a human reviewer's own decision, unchanged) and
+    automatically (an INFECTED scan result - no human ever sees an
+    infected file for review).
 
-    UPLOADING is excluded too, on the same "don't model a state nothing
-    rests in" principle: nothing gates the moment between bytes-received
-    and REVIEW_REQUIRED, so a version is created directly in
-    REVIEW_REQUIRED rather than passing through a persisted-but-
-    instantaneous UPLOADED row-state that would never actually be
-    observed at rest.
+    PROCESSING/EXTRACTED remain excluded - still describe an OCR/
+    extraction pipeline that doesn't exist in this codebase.
+
+    UPLOADING remains excluded, on the same "don't model a state
+    nothing rests in" principle: nothing gates the moment between
+    bytes-received and SCANNING, so a version is created directly in
+    SCANNING rather than passing through a persisted-but-instantaneous
+    UPLOADED row-state that would never actually be observed at rest.
     """
 
+    SCANNING = "SCANNING"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
     VERIFIED = "VERIFIED"
     REJECTED = "REJECTED"
     QUARANTINED = "QUARANTINED"
+    FAILED = "FAILED"
 
 
 class DocumentVersion(
@@ -162,6 +171,21 @@ class DocumentVersion(
     )
 
     review_note: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    # --- Scan (SCANNING -> REVIEW_REQUIRED/QUARANTINED/FAILED) ---
+    # Dedicated, queryable columns rather than overloading review_note,
+    # which means "why a HUMAN decided this" - these are system-
+    # written, no reviewer involved. See CLAUDE.md "Malware scanning".
+
+    malware_signature: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    scan_error: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,
     )

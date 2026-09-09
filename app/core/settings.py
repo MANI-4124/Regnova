@@ -56,6 +56,23 @@ class Settings(BaseSettings):
     document_max_size_bytes: int = 100 * 1024 * 1024
 
     # -------------------------------------------------
+    # Malware scanning (AC-FR-04-01) - see app/scanning/MalwareScanner
+    # -------------------------------------------------
+
+    # Deliberately defaults to "noop" - safe for local dev and tests,
+    # but a REAL security consequence if left unset in production
+    # (uploads would never be scanned at all - see CLAUDE.md "Malware
+    # scanning"). Must be explicitly set to "clamav" via
+    # MALWARE_SCANNER_BACKEND for any deployed environment.
+    malware_scanner_backend: str = "noop"
+
+    clamav_host: str = "localhost"
+
+    clamav_port: int = 3310
+
+    clamav_timeout_seconds: float = 30.0
+
+    # -------------------------------------------------
     # Pydantic
     # -------------------------------------------------
 

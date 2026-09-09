@@ -3,9 +3,15 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_correlation_id, get_db_session, get_document_storage
+from app.core.dependencies import (
+    get_correlation_id,
+    get_db_session,
+    get_document_storage,
+    get_malware_scanner,
+)
 from app.modules.rbac.dependencies import require_employee, require_manager
 from app.modules.user.models import User
+from app.scanning import MalwareScanner
 from app.storage import DocumentStorage
 
 from .schemas import (
@@ -26,8 +32,9 @@ router = APIRouter(
 def get_document_version_service(
     db: Session = Depends(get_db_session),
     storage: DocumentStorage = Depends(get_document_storage),
+    scanner: MalwareScanner = Depends(get_malware_scanner),
 ) -> DocumentVersionService:
-    return DocumentVersionService(db, storage)
+    return DocumentVersionService(db, storage, scanner)
 
 
 def get_document_field_service(
@@ -148,6 +155,32 @@ def quarantine_document_version(
         document_id,
         version_id,
         note=payload.note,
+        actor_user_id=current_user.id,
+        correlation_id=correlation_id,
+    )
+
+
+@router.post(
+    "/{version_id}/retry-scan",
+    response_model=DocumentVersionResponse,
+)
+def retry_document_version_scan(
+    document_id: UUID,
+    version_id: UUID,
+    current_user: User = Depends(require_manager),
+    correlation_id: str = Depends(get_correlation_id),
+    service: DocumentVersionService = Depends(get_document_version_service),
+):
+    """
+    AC-FR-04-03 - retries a scan that FAILED (or is stuck in SCANNING
+    from a crashed request) without creating another document version.
+    require_manager, matching verify/reject/quarantine's own tier -
+    this is a review/operational-recovery action, not a routine upload.
+    """
+    return service.retry_scan(
+        current_user.organization_id,
+        document_id,
+        version_id,
         actor_user_id=current_user.id,
         correlation_id=correlation_id,
     )
