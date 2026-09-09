@@ -236,6 +236,38 @@ def _build_state_current_changed(db: Session, event) -> AuditEventDraft:
     )
 
 
+def _build_export_generated(db: Session, event) -> AuditEventDraft:
+    """
+    Tier decided by export_type inside the payload itself - the same
+    dynamic-resolution shape _build_finding_proposed already uses for
+    product-scoping. FINDINGS_CSV is CUSTOMER_VISIBLE (a customer's own
+    record of their own export); EVIDENCE_PACK_JSON is
+    INTERNAL_REGULATORY - regulatory-side reconstruction activity, not
+    access-governance, deliberately not TECHNICAL_SECURITY the way
+    InternalRoleAssignmentChanged is (RA/Auditor colleagues plausibly
+    want visibility into who pulled evidence packs for which
+    snapshots). No split either way - nothing here is more sensitive
+    than the tier itself already gates. See CLAUDE.md "Exports".
+    """
+    payload = event.payload or {}
+    product_id, product_market_state_id = _resolve_product_market_state_scope(
+        db, event.organization_id, payload,
+    )
+
+    tier = (
+        AuditVisibilityTier.CUSTOMER_VISIBLE.value
+        if payload.get("export_type") == "FINDINGS_CSV"
+        else AuditVisibilityTier.INTERNAL_REGULATORY.value
+    )
+
+    return AuditEventDraft(
+        visibility_tier=tier,
+        payload=dict(payload),
+        product_id=product_id,
+        product_market_state_id=product_market_state_id,
+    )
+
+
 def _build_internal_role_assignment_changed(db: Session, event) -> AuditEventDraft:
     """
     TECHNICAL_SECURITY, no split - the most audit-critical surface in
@@ -274,6 +306,7 @@ AUDIT_BUILDERS: dict[str, Callable[[Session, Any], AuditEventDraft]] = {
     "AssessmentCompleted": _build_assessment_completed,
     "StateCurrentChanged": _build_state_current_changed,
     "InternalRoleAssignmentChanged": _build_internal_role_assignment_changed,
+    "ExportGenerated": _build_export_generated,
 }
 
 
@@ -354,8 +387,16 @@ class AuditService:
             **filters,
         )
 
-    def _resolve_internal_tier_grants(self, caller_user_id: UUID) -> set[str]:
+    def resolve_internal_tier_grants(self, caller_user_id: UUID) -> set[str]:
         """
+        Public (not `_`-prefixed) precisely because it's now a genuine
+        cross-module utility, not an AuditService-internal helper: the
+        export module's own INTERNAL_REGULATORY gate on evidence-pack
+        generation/download (see CLAUDE.md "Exports") calls this exact
+        method rather than re-deriving "does this caller hold a
+        qualifying internal role" a second time. Renamed when that
+        reuse was added - was `_resolve_internal_tier_grants`.
+
         AUDITOR is strictly read-only and grants all three tiers - the
         whole point of the role (see InternalRoleCode.AUDITOR). RA/
         Senior Reviewer/Knowledge Lead/Content Advisor grant customer-
@@ -430,7 +471,7 @@ class AuditService:
         distinctly-named parameters specifically so they can never be
         confused with each other.
         """
-        granted = self._resolve_internal_tier_grants(caller_user_id)
+        granted = self.resolve_internal_tier_grants(caller_user_id)
         if not granted:
             raise AuditReaderNotAuthorized()
 
@@ -463,24 +504,10 @@ class AuditService:
         filters: dict[str, Any],
         result_count: int,
     ) -> None:
-        """
-        A direct write, not an outbox-consumed one - there is no domain
-        change here to publish for other consumers, this is the audit
-        system recording a fact about its own reader activity. Commits
-        immediately: unlike every other read endpoint in this codebase,
-        this GET has a required, durable side effect, and there is no
-        later domain-write transaction for it to piggyback on.
-        """
-        self.repository.create_direct(
+        self.record_cross_org_access(
+            caller_user_id=caller_user_id,
             organization_id=organization_id,
             event_type="AuditLogQueried",
-            schema_version=1,
-            occurred_at=datetime.now(timezone.utc),
-            actor_user_id=caller_user_id,
-            correlation_id=correlation_id,
-            product_id=None,
-            product_market_state_id=None,
-            visibility_tier=AuditVisibilityTier.TECHNICAL_SECURITY.value,
             payload={
                 "queried_organization_id": str(organization_id),
                 "granted_tiers": sorted(granted_tiers),
@@ -490,6 +517,52 @@ class AuditService:
                 },
                 "result_count": result_count,
             },
+            correlation_id=correlation_id,
+        )
+
+    def record_cross_org_access(
+        self,
+        *,
+        caller_user_id: UUID,
+        organization_id: UUID,
+        event_type: str,
+        payload: dict[str, Any],
+        correlation_id: str | None = None,
+    ) -> None:
+        """
+        The generalized self-audit mechanism every deliberate
+        organization_id exception must use - see CLAUDE.md "Deliberate
+        organization_id exceptions" for the maintained list of callers.
+        Generalized from what was `_record_cross_org_query`'s own
+        inline body (that method is now a thin wrapper over this) when
+        the export module's evidence-pack generation/download needed
+        the exact same mechanism for a second exception, not a copy of
+        it - see CLAUDE.md "Exports".
+
+        A direct write, not an outbox-consumed one - there is no domain
+        change here to publish for other consumers, this is the audit
+        system recording a fact about its own reader/accessor activity.
+        Always TECHNICAL_SECURITY, always filed under the QUERIED/
+        ACCESSED organization (never the caller's own tenant-zero org) -
+        same "whose data this is about" convention AuditEvent.organization_id
+        uses everywhere else. Commits immediately: unlike most domain
+        writes in this codebase, several call sites of this method are
+        a GET with no other domain-write transaction to piggyback its
+        commit onto - and even where one exists (a POST), keeping this
+        commit uniform across every caller matters more than an
+        occasional saved round trip.
+        """
+        self.repository.create_direct(
+            organization_id=organization_id,
+            event_type=event_type,
+            schema_version=1,
+            occurred_at=datetime.now(timezone.utc),
+            actor_user_id=caller_user_id,
+            correlation_id=correlation_id,
+            product_id=None,
+            product_market_state_id=None,
+            visibility_tier=AuditVisibilityTier.TECHNICAL_SECURITY.value,
+            payload=payload,
             internal_payload=None,
         )
         self.db.commit()

@@ -47,6 +47,7 @@ from app.modules.document_version.models import (
     DocumentVersion,
 )
 from app.modules.evidence.models import Evidence
+from app.modules.export.models import Export
 # migrations/env.py
 
 import app.models
@@ -87,4 +88,5 @@ __all__ = [
     "DocumentField",
     "DocumentFieldRevision",
     "Evidence",
+    "Export",
 ]

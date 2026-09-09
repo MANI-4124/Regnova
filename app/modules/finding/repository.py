@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -138,6 +139,30 @@ class FindingRevisionRepository(BaseRepository[FindingRevision]):
         statement = (
             select(FindingRevision)
             .where(FindingRevision.finding_id == finding_id)
+            .order_by(FindingRevision.revision_number.desc())
+            .limit(1)
+        )
+
+        return self.db.scalar(statement)
+
+    def get_latest_as_of(self, finding_id: UUID, as_of: datetime) -> FindingRevision | None:
+        """
+        The revision that was current at a specific point in time - not
+        "whatever's current now". Findings keep accruing revisions
+        after the StateSnapshot that used them was built (the review
+        workflow happens later), so a bare finding_id reference drifts;
+        this is the one genuinely new query AC-FR-14-01 reconstruction
+        needs (see CLAUDE.md "Exports") - every other entity an export
+        touches is already immutable-by-reference. Returns None if the
+        Finding didn't exist yet as of `as_of` (its first revision is
+        later than the requested point in time).
+        """
+        statement = (
+            select(FindingRevision)
+            .where(
+                FindingRevision.finding_id == finding_id,
+                FindingRevision.created_at <= as_of,
+            )
             .order_by(FindingRevision.revision_number.desc())
             .limit(1)
         )

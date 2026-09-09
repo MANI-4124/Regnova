@@ -33,6 +33,7 @@ from app.modules.document.router import router as document_router
 from app.modules.document_version.router import router as document_version_router
 from app.modules.evidence.router import router as evidence_router
 from app.modules.audit.router import router as audit_router
+from app.modules.export.router import router as export_router
 
 
 @asynccontextmanager
@@ -91,6 +92,7 @@ def create_app() -> FastAPI:
     app.include_router(document_version_router)
     app.include_router(evidence_router)
     app.include_router(audit_router)
+    app.include_router(export_router)
     register_exception_handlers(app)
 
     @app.get("/")

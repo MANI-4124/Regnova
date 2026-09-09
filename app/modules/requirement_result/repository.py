@@ -87,3 +87,15 @@ class RequirementResultRepository(BaseRepository[RequirementResult]):
         )
 
         return list(self.db.scalars(statement))
+
+    def get_all_for_run(self, assessment_run_id: UUID) -> list[RequirementResult]:
+        """
+        Every dimension, not just one - used by the evidence pack export
+        (see CLAUDE.md "Exports"), which needs the run's complete
+        lineage trace, not a single-dimension slice.
+        """
+        statement = select(RequirementResult).where(
+            RequirementResult.assessment_run_id == assessment_run_id,
+        )
+
+        return list(self.db.scalars(statement))
