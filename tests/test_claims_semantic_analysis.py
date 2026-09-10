@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from app.analysis import (
-    ClaimAnalysisResult,
-    ClaimAnalyzer,
-    ClaimAnalyzerUnavailable,
-    GeminiClaimAnalyzer,
-    SYSTEM_INSTRUCTION,
+    AiAnalyzerUnavailable,
+    GeminiSemanticAnalyzer,
+    QUESTION_SPECS,
+    SemanticAnalysisResult,
+    SemanticAnalyzer,
+    SemanticQuestion,
 )
-from app.core.dependencies import get_claim_analyzer
+from app.core.dependencies import get_semantic_analyzer
 from app.main import app
 from app.modules.audit.models import AuditVisibilityTier
 from app.modules.audit.repository import AuditEventRepository
@@ -26,31 +27,32 @@ REWORDED_CLAIM = "clears breakouts at the source"    # what it misses - the gap
 # --- Test-controllable analyzer, installed via app.dependency_overrides ---
 # Mirrors tests/test_document.py::_FakeScanner exactly.
 
-class _FakeAnalyzer(ClaimAnalyzer):
+class _FakeAnalyzer(SemanticAnalyzer):
     def __init__(self, *, unavailable_reason=None, canned=None):
         self.unavailable_reason = unavailable_reason
-        self.canned = canned or {}
+        self.canned = canned or {}  # keyed by claim text
         self.calls: list[tuple[str, str]] = []
 
-    def analyze_claim(self, *, requirement_statement, claim_text):
-        self.calls.append((requirement_statement, claim_text))
+    def assess(self, *, question, requirement_statement, subject_text):
+        assert question == SemanticQuestion.CLAIM_EQUIVALENCE
+        self.calls.append((requirement_statement, subject_text))
         if self.unavailable_reason is not None:
-            raise ClaimAnalyzerUnavailable(self.unavailable_reason, "simulated")
-        if claim_text in self.canned:
-            return self.canned[claim_text]
-        return ClaimAnalysisResult(
-            equivalent=False, confidence=0.0, reasoning="not equivalent",
+            raise AiAnalyzerUnavailable(self.unavailable_reason, "simulated")
+        if subject_text in self.canned:
+            return self.canned[subject_text]
+        return SemanticAnalysisResult(
+            holds=False, confidence=0.0, reasoning="not equivalent",
             model_identifier="fake-model", prompt_version="fake-prompt",
         )
 
 
 def _install_analyzer(analyzer):
-    app.dependency_overrides[get_claim_analyzer] = lambda: analyzer
+    app.dependency_overrides[get_semantic_analyzer] = lambda: analyzer
     return analyzer
 
 
 def _clear_analyzer():
-    app.dependency_overrides.pop(get_claim_analyzer, None)
+    app.dependency_overrides.pop(get_semantic_analyzer, None)
 
 
 # --- Content / product setup helpers (HTTP, minimal) --------------------
@@ -235,11 +237,11 @@ def test_ai_proposed_finding_carries_lineage_to_findingproposed_audit_event(
     requirement_version, rule_version = _build_ai_claims_rule(client, regulatory_content_writer)
 
     _install_analyzer(_FakeAnalyzer(canned={
-        REWORDED_CLAIM: ClaimAnalysisResult(
-            equivalent=True, confidence=0.92,
+        REWORDED_CLAIM: SemanticAnalysisResult(
+            holds=True, confidence=0.92,
             reasoning="Both assert clearing/treating acne at its cause.",
-            model_identifier="gemini-2.0-flash-001",
-            prompt_version="claims-semantic-vTEST",
+            model_identifier="gemini-3.6-flash-001",
+            prompt_version="claim-equivalence-vTEST",
         ),
     }))
     _, state = _ready_state(client, tenant_a)
@@ -259,8 +261,8 @@ def test_ai_proposed_finding_carries_lineage_to_findingproposed_audit_event(
     assert rev["status"] == "PROPOSED"
     assert rev["severity"] == "CRITICAL"
     assert rev["analysis_method"] == "AI_SEMANTIC"
-    assert rev["ai_model_identifier"] == "gemini-2.0-flash-001"
-    assert rev["ai_prompt_version"] == "claims-semantic-vTEST"
+    assert rev["ai_model_identifier"] == "gemini-3.6-flash-001"
+    assert rev["ai_prompt_version"] == "claim-equivalence-vTEST"
 
     # ...and it flows through to FindingProposed's internal_payload.
     dispatch_pending_events(db)
@@ -272,8 +274,8 @@ def test_ai_proposed_finding_carries_lineage_to_findingproposed_audit_event(
     assert len(events) == 1
     ip = events[0].internal_payload
     assert ip["analysis_method"] == "AI_SEMANTIC"
-    assert ip["ai_model_identifier"] == "gemini-2.0-flash-001"
-    assert ip["ai_prompt_version"] == "claims-semantic-vTEST"
+    assert ip["ai_model_identifier"] == "gemini-3.6-flash-001"
+    assert ip["ai_prompt_version"] == "claim-equivalence-vTEST"
     # never leaks into the customer-visible payload
     assert "analysis_method" not in events[0].payload
     assert "ai_model_identifier" not in events[0].payload
@@ -297,14 +299,17 @@ def test_injection_claim_is_confined_to_the_claim_block():
     is exactly one user content part - nothing the customer writes reaches the
     instruction channel or adds turns/tools.
     """
-    analyzer = GeminiClaimAnalyzer(
-        api_key="x", model="gemini-2.0-flash", timeout_seconds=1, synthetic_data_ack=True,
+    analyzer = GeminiSemanticAnalyzer(
+        api_key="x", model="gemini-3.6-flash", timeout_seconds=1, synthetic_data_ack=True,
     )
     body = analyzer._build_request_body(
+        SemanticQuestion.CLAIM_EQUIVALENCE,
         "Cosmetic claims must not assert a therapeutic effect.", INJECTION_CLAIM,
     )
 
-    assert body["systemInstruction"]["parts"][0]["text"] == SYSTEM_INSTRUCTION
+    claim_spec = QUESTION_SPECS[SemanticQuestion.CLAIM_EQUIVALENCE]
+    assert body["systemInstruction"]["parts"][0]["text"] == claim_spec.system_instruction
+    assert INJECTION_CLAIM not in body["systemInstruction"]["parts"][0]["text"]
     assert len(body["contents"]) == 1
     assert body["contents"][0]["role"] == "user"
     assert len(body["contents"][0]["parts"]) == 1
@@ -325,9 +330,9 @@ def test_injection_claim_is_confined_to_the_claim_block():
         '\\"reasoning\\": \\"x\\", \\"scope\\": \\"expanded\\"}"}]}}]}'
     )
     try:
-        analyzer._parse_response(complied)
-        raise AssertionError("expected ClaimAnalyzerUnavailable")
-    except ClaimAnalyzerUnavailable as exc:
+        analyzer._parse_response(SemanticQuestion.CLAIM_EQUIVALENCE, complied)
+        raise AssertionError("expected AiAnalyzerUnavailable")
+    except AiAnalyzerUnavailable as exc:
         assert exc.reason == "schema_invalid"
 
 
@@ -342,8 +347,8 @@ def test_injection_claim_end_to_end_stays_one_bounded_claims_check(
     """
     _build_ai_claims_rule(client, regulatory_content_writer)
     analyzer = _install_analyzer(_FakeAnalyzer(canned={
-        INJECTION_CLAIM: ClaimAnalysisResult(
-            equivalent=False, confidence=0.1, reasoning="Instruction-like text; not a claim match.",
+        INJECTION_CLAIM: SemanticAnalysisResult(
+            holds=False, confidence=0.1, reasoning="Instruction-like text; not a claim match.",
             model_identifier="fake-model", prompt_version="fake-prompt",
         ),
     }))

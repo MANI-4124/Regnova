@@ -73,14 +73,14 @@ class Settings(BaseSettings):
     clamav_timeout_seconds: float = 30.0
 
     # -------------------------------------------------
-    # Claims semantic analysis - see app/analysis/ClaimAnalyzer + CLAUDE.md
+    # Semantic analysis (Claims + Label) - see app/analysis/ + CLAUDE.md
     # -------------------------------------------------
 
-    # Defaults to "stub" (StubClaimAnalyzer - always "not equivalent", never
-    # proposes) for the same reason malware_scanner_backend defaults to "noop":
-    # the AI path stays completely inert until an environment deliberately opts
-    # in. Set to "gemini" via CLAIM_ANALYZER_BACKEND.
-    claim_analyzer_backend: str = "stub"
+    # Defaults to "stub" (StubSemanticAnalyzer - always returns the benign
+    # answer per question) for the same reason malware_scanner_backend defaults
+    # to "noop": the AI path stays completely inert until an environment
+    # deliberately opts in. Set to "gemini" via SEMANTIC_ANALYZER_BACKEND.
+    semantic_analyzer_backend: str = "stub"
 
     # .env ONLY. Never a literal in code, never committed - .env is gitignored
     # the same way SECRET_KEY / DATABASE_URL are.
@@ -92,12 +92,12 @@ class Settings(BaseSettings):
     # whatever the API reports back (modelVersion), not this default.
     gemini_model: str = "gemini-3.6-flash"
 
-    claim_analyzer_timeout_seconds: float = 20.0
+    ai_analyzer_timeout_seconds: float = 20.0
 
     # Demo default, flagged for RegNova Knowledge Lead sign-off - no spec number
-    # exists for this the way D5.1 supplies DEFAULT_MIN_CONFIDENCE. equivalent=True
-    # from the model BELOW this threshold -> NO proposal (recorded on the StepRun
-    # trace only). See CLAUDE.md.
+    # exists for this the way D5.1 supplies DEFAULT_MIN_CONFIDENCE. A model
+    # "equivalent" verdict BELOW this threshold -> NO proposal (recorded on the
+    # StepRun trace only). See CLAUDE.md.
     claim_semantic_confidence_threshold: float = 0.7
 
     # ⚠ Google's AI Studio free tier may train on submitted inputs. Must be

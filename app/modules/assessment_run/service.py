@@ -8,7 +8,12 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.analysis import ClaimAnalyzer, ClaimAnalyzerUnavailable, build_claim_analyzer
+from app.analysis import (
+    AiAnalyzerUnavailable,
+    SemanticAnalyzer,
+    SemanticQuestion,
+    build_semantic_analyzer,
+)
 from app.common.enums import UnknownBehavior
 from app.core.settings import get_settings
 from app.engine import evaluate_condition
@@ -73,7 +78,7 @@ class AssessmentRunService:
     for the condition under which this needs to become async.
     """
 
-    def __init__(self, db: Session, claim_analyzer: ClaimAnalyzer | None = None):
+    def __init__(self, db: Session, semantic_analyzer: SemanticAnalyzer | None = None):
         self.db = db
         self.runs = AssessmentRunRepository(db)
         self.step_runs = StepRunRepository(db)
@@ -88,16 +93,15 @@ class AssessmentRunService:
         self.evidence = EvidenceRepository(db)
         self.document_fields = DocumentFieldRepository(db)
         self.document_field_revisions = DocumentFieldRevisionRepository(db)
-        # CLAIMS-only semantic peer hop (see _maybe_run_claim_semantic_hop and
-        # CLAUDE.md "Claims semantic analysis"). Injected per-request via
-        # get_claim_analyzer; falls back to the configured backend (default:
-        # StubClaimAnalyzer, always "not equivalent") when constructed outside
-        # a request, so MarketReadinessService and any script behave per
-        # settings.
+        # Semantic peer hop (see _maybe_run_semantic_hop and CLAUDE.md
+        # "Semantic analysis (Claims + Label)"). Injected per-request via
+        # get_semantic_analyzer; falls back to the configured backend (default:
+        # StubSemanticAnalyzer) when constructed outside a request, so
+        # MarketReadinessService and any script behave per settings.
         _settings = get_settings()
-        self.claim_analyzer = (
-            claim_analyzer if claim_analyzer is not None
-            else build_claim_analyzer(_settings)
+        self.semantic_analyzer = (
+            semantic_analyzer if semantic_analyzer is not None
+            else build_semantic_analyzer(_settings)
         )
         self.claim_semantic_confidence_threshold = (
             _settings.claim_semantic_confidence_threshold
@@ -379,7 +383,7 @@ class AssessmentRunService:
                     run, dimension, rule_version, subject_key, subject_facts,
                     correlation_id=correlation_id,
                 )
-                self._maybe_run_claim_semantic_hop(
+                self._maybe_run_semantic_hop(
                     run, dimension, rule_version, subject_key, subject_facts,
                     deterministic_result, correlation_id=correlation_id,
                 )
@@ -913,15 +917,15 @@ class AssessmentRunService:
         # in this pass - no Evidence/Document or workflow-engine model
         # exists yet to write anything meaningful to.
 
-    # --- Claims semantic analysis peer hop -------------------------------
+    # --- Semantic analysis peer hop (Claims + Label) --------------------
     #
-    # A sibling of evaluate_condition, NOT a replacement (CLAUDE.md "Claims
-    # semantic analysis"). The deterministic rule always runs first and
+    # A sibling of evaluate_condition, NOT a replacement (CLAUDE.md "Semantic
+    # analysis (Claims + Label)"). The deterministic rule always runs first and
     # unconditionally; this runs only after it, only for opted-in rules, and
     # only produces a Finding *proposal* through the existing propose() path -
     # never a determination, never a state/gate/progress change directly.
 
-    def _maybe_run_claim_semantic_hop(
+    def _maybe_run_semantic_hop(
         self, run, dimension, rule_version, subject_key, facts, deterministic_result,
         correlation_id: str | None = None,
     ) -> None:
@@ -967,11 +971,12 @@ class AssessmentRunService:
         )
 
         try:
-            ai_result = self.claim_analyzer.analyze_claim(
+            ai_result = self.semantic_analyzer.assess(
+                question=SemanticQuestion.CLAIM_EQUIVALENCE,
                 requirement_statement=requirement_statement,
-                claim_text=claim_text,
+                subject_text=claim_text,
             )
-        except ClaimAnalyzerUnavailable as exc:
+        except AiAnalyzerUnavailable as exc:
             # Graceful degradation: recorded on THIS StepRun only. The
             # AI_ANALYSIS step_type is excluded from _derive_dimension_state,
             # so this failure never touches dimension state / gate / progress /
@@ -980,22 +985,27 @@ class AssessmentRunService:
             step.status = StepRunStatus.FAILED.value
             step.outcome = "UNKNOWN"
             step.unknown_reason = "ai_unavailable"
-            step.error_message = f"claim analyzer unavailable ({exc.reason})"
-            step.trace = [{"step": "ai_semantic", "unavailable_reason": exc.reason}]
+            step.error_message = f"semantic analyzer unavailable ({exc.reason})"
+            step.trace = [{
+                "step": "ai_semantic",
+                "question": SemanticQuestion.CLAIM_EQUIVALENCE.value,
+                "unavailable_reason": exc.reason,
+            }]
             self.step_runs.create(step)
             self.db.commit()
             return
 
         proposes = (
-            ai_result.equivalent
+            ai_result.holds
             and ai_result.confidence >= self.claim_semantic_confidence_threshold
         )
         step.outcome = "MATCH" if proposes else "NO_MATCH"
         step.trace = [{
             "step": "ai_semantic",
+            "question": SemanticQuestion.CLAIM_EQUIVALENCE.value,
             "model_identifier": ai_result.model_identifier,
             "prompt_version": ai_result.prompt_version,
-            "equivalent": ai_result.equivalent,
+            "holds": ai_result.holds,
             "confidence": ai_result.confidence,
             "confidence_threshold": self.claim_semantic_confidence_threshold,
             "reasoning": ai_result.reasoning,
@@ -1197,13 +1207,13 @@ class AssessmentRunService:
         # Finding nor a RequirementResult, so RequirementResult alone
         # would silently lose that signal and the dimension would read
         # COMPLIANT instead of PENDING_INPUT.
-        # AI_ANALYSIS StepRuns (the Claims semantic peer hop) are recorded for
-        # audit but MUST NOT influence the deterministic dimension state - a
-        # failed or UNKNOWN AI call cannot force HUMAN_REVIEW/engine-error, and
-        # an AI "match" doesn't move the state here. An AI-*proposed* Finding
-        # still counts, via findings_proposed / has_open_finding below - that's
-        # a real Finding a human dispositions, exactly like a deterministic
-        # one. See CLAUDE.md "Claims semantic analysis".
+        # AI_ANALYSIS StepRuns (the semantic peer hop) are recorded for audit
+        # but MUST NOT influence the deterministic dimension state - a failed or
+        # UNKNOWN AI call cannot force HUMAN_REVIEW/engine-error, and an AI
+        # "match" doesn't move the state here. An AI-*proposed* Finding still
+        # counts, via findings_proposed / has_open_finding below - that's a real
+        # Finding a human dispositions, exactly like a deterministic one. See
+        # CLAUDE.md "Semantic analysis (Claims + Label)".
         steps = [
             s for s in self.step_runs.get_for_run_dimension(assessment_run_id, dimension)
             if s.step_type == StepType.RULE_EVALUATION.value
