@@ -150,7 +150,16 @@ def build_requirement_and_rule(client, writer, *, category, requirement_override
     return requirement_version, rule_version
 
 
-def create_active_release(client, writer, *, category, rule_version_ids, requirement_version_ids):
+def create_source_version(client, writer, *, category):
+    """
+    Creates + activates one SourceVersion standing in for a category's
+    synthetic "product safety code". Split out of create_active_release
+    so SourceLocations can be attached to it - and cited by rule
+    versions - before the release is assembled. (Rules cite a
+    SourceLocation at creation time; the source therefore has to exist
+    first, not be created last alongside the release as it used to be.)
+    """
+
     source = client.post("/sources", headers=writer["headers"]).json()
     source_version = client.post(
         f"/sources/{source['id']}/versions",
@@ -165,17 +174,42 @@ def create_active_release(client, writer, *, category, rule_version_ids, require
         },
         headers=writer["headers"],
     ).json()
-    activated_source = _submit_verify_activate(
+    return _submit_verify_activate(
         client, writer, f"/sources/{source['id']}/versions/{source_version['id']}",
     )
 
+
+def create_source_locations(client, writer, source_version_id, specs):
+    """
+    specs: {key: {coordinate fields (section/article/schedule/page/
+    table_ref/paragraph) + optional normalized_text}}. Returns
+    {key: source_location_id}, for citing from a rule version's
+    source_location_ids. This is what makes a Finding's traceability
+    chain resolvable all the way to a source clause - without it, every
+    Finding this corpus produces has an empty source_location_ids.
+    """
+
+    locations = {}
+    for key, coords in specs.items():
+        response = client.post(
+            "/source-locations",
+            json={"source_version_id": source_version_id, **coords},
+            headers=writer["headers"],
+        )
+        assert response.status_code == 200, response.text
+        locations[key] = response.json()["id"]
+    return locations
+
+
+def create_active_release(client, writer, *, category, source_version_id,
+                           rule_version_ids, requirement_version_ids):
     response = client.post(
         "/regulatory-basis-releases",
         json={
             "jurisdiction": JURISDICTION,
             "market": JURISDICTION,
             "category": category,
-            "source_version_ids": [activated_source["id"]],
+            "source_version_ids": [source_version_id],
             "requirement_version_ids": requirement_version_ids,
             "rule_version_ids": rule_version_ids,
         },
@@ -339,6 +373,20 @@ def build_beauty_content(client, writer):
     requirement_versions: dict[str, dict] = {}
     rule_versions: dict[str, dict] = {}
 
+    source_version = create_source_version(client, writer, category="Beauty")
+    citations = create_source_locations(client, writer, source_version["id"], {
+        "claims_prohibited": {
+            "section": "12", "paragraph": "1",
+            "normalized_text": "A cosmetic product must not be presented with any claim that asserts a "
+                               "therapeutic, prophylactic or medicinal effect.",
+        },
+        "ingredients_prohibited": {
+            "section": "3", "schedule": "Third Schedule",
+            "normalized_text": "A substance listed in the Third Schedule (Prohibited Substances) must not be "
+                               "present as an ingredient of a cosmetic product.",
+        },
+    })
+
     rv, rlv = build_requirement_and_rule(
         client, writer, category="Beauty",
         requirement_overrides=dict(
@@ -350,6 +398,7 @@ def build_beauty_content(client, writer):
             condition={"op": "in", "field": "wording", "normalize": "lowercase",
                        "value": ["cures acne", "treats eczema"]},
             output_type="FINDING_PROPOSAL", unknown_behavior="HUMAN_REVIEW",
+            source_location_ids=[citations["claims_prohibited"]],
         ),
     )
     requirement_versions["claims_prohibited"] = rv
@@ -398,6 +447,7 @@ def build_beauty_content(client, writer):
             condition={"op": "in", "field": "ingredient_name", "normalize": "lowercase",
                        "value": ["mercury", "hydroquinone"]},
             output_type="FINDING_PROPOSAL", unknown_behavior="HUMAN_REVIEW",
+            source_location_ids=[citations["ingredients_prohibited"]],
         ),
     )
     requirement_versions["ingredients_prohibited"] = rv
@@ -453,11 +503,18 @@ def build_beauty_content(client, writer):
 
     release = create_active_release(
         client, writer, category=CATEGORY_BEAUTY,
+        source_version_id=source_version["id"],
         rule_version_ids=[v["id"] for v in rule_versions.values()],
         requirement_version_ids=[v["id"] for v in requirement_versions.values()],
     )
 
-    return {"release": release, "requirement_versions": requirement_versions, "rule_versions": rule_versions}
+    return {
+        "release": release,
+        "requirement_versions": requirement_versions,
+        "rule_versions": rule_versions,
+        "source_version": source_version,
+        "citations": citations,
+    }
 
 
 def build_nutra_content(client, writer):
@@ -478,6 +535,25 @@ def build_nutra_content(client, writer):
     requirement_versions: dict[str, dict] = {}
     rule_versions: dict[str, dict] = {}
 
+    source_version = create_source_version(client, writer, category="Nutraceuticals")
+    citations = create_source_locations(client, writer, source_version["id"], {
+        "dosage_soft": {
+            "section": "4", "paragraph": "1",
+            "normalized_text": "Daily intake of a single active constituent should not exceed the "
+                               "recommended soft limit of 1000 mg without documented justification.",
+        },
+        "dosage_hard": {
+            "section": "4", "paragraph": "3", "schedule": "Second Schedule",
+            "normalized_text": "Daily intake must never exceed the absolute safety ceiling of 2000 mg. "
+                               "A product exceeding this ceiling is ineligible for registration.",
+        },
+        "health_claim": {
+            "section": "9", "paragraph": "2",
+            "normalized_text": "A health claim may use only wording pre-approved and listed in the "
+                               "Permitted Health Claims register.",
+        },
+    })
+
     rv, rlv = build_requirement_and_rule(
         client, writer, category="Nutraceuticals",
         requirement_overrides=dict(
@@ -488,6 +564,7 @@ def build_nutra_content(client, writer):
         rule_overrides=dict(
             condition={"op": "lte", "field": "daily_dosage_mg", "value": 1000},
             output_type="REQUIREMENT_RESULT", unknown_behavior="HUMAN_REVIEW",
+            source_location_ids=[citations["dosage_soft"]],
         ),
     )
     requirement_versions["dosage_soft"] = rv
@@ -503,6 +580,7 @@ def build_nutra_content(client, writer):
         rule_overrides=dict(
             condition={"op": "gt", "field": "daily_dosage_mg", "value": 2000},
             output_type="FINDING_PROPOSAL", unknown_behavior="HUMAN_REVIEW",
+            source_location_ids=[citations["dosage_hard"]],
         ),
     )
     requirement_versions["dosage_hard"] = rv
@@ -542,6 +620,7 @@ def build_nutra_content(client, writer):
             condition={"op": "not_in", "field": "wording", "normalize": "lowercase",
                        "value": ["supports normal energy metabolism", "contributes to normal immune function"]},
             output_type="FINDING_PROPOSAL", unknown_behavior="HUMAN_REVIEW",
+            source_location_ids=[citations["health_claim"]],
         ),
     )
     requirement_versions["health_claim"] = rv
@@ -626,11 +705,18 @@ def build_nutra_content(client, writer):
 
     release = create_active_release(
         client, writer, category=CATEGORY_NUTRA,
+        source_version_id=source_version["id"],
         rule_version_ids=[v["id"] for v in rule_versions.values()],
         requirement_version_ids=[v["id"] for v in requirement_versions.values()],
     )
 
-    return {"release": release, "requirement_versions": requirement_versions, "rule_versions": rule_versions}
+    return {
+        "release": release,
+        "requirement_versions": requirement_versions,
+        "rule_versions": rule_versions,
+        "source_version": source_version,
+        "citations": citations,
+    }
 
 
 def build_meddevice_content(client, writer):
@@ -652,6 +738,30 @@ def build_meddevice_content(client, writer):
 
     requirement_versions: dict[str, dict] = {}
     rule_versions: dict[str, dict] = {}
+
+    source_version = create_source_version(client, writer, category="Medical Devices")
+    citations = create_source_locations(client, writer, source_version["id"], {
+        "clinical_evidence": {
+            "section": "7", "paragraph": "2",
+            "normalized_text": "A device classified Risk Class III must hold a clinical evidence report "
+                               "on file prior to registration.",
+        },
+        "bench_test": {
+            "section": "8", "paragraph": "1",
+            "normalized_text": "A device classified Risk Class III must hold a bench test report "
+                               "demonstrating conformity with the applicable performance standards.",
+        },
+        "notified_body": {
+            "section": "10", "paragraph": "4",
+            "normalized_text": "A device classified Risk Class III requires notified-body sign-off before "
+                               "it may be placed on the market.",
+        },
+        "model_name_consistency": {
+            "section": "14", "table_ref": "Table 3",
+            "normalized_text": "The device model name declared across the submitted technical "
+                               "documentation must be consistent.",
+        },
+    })
 
     rv, rlv = build_requirement_and_rule(
         client, writer, category="Medical Devices",
@@ -681,6 +791,7 @@ def build_meddevice_content(client, writer):
                 {"op": "not_exists", "field": "status"},
             ]},
             output_type="FINDING_PROPOSAL", unknown_behavior="FAIL_CLOSED",
+            source_location_ids=[citations["clinical_evidence"]],
         ),
     )
     requirement_versions["clinical_evidence"] = rv
@@ -699,6 +810,7 @@ def build_meddevice_content(client, writer):
                 {"op": "not_exists", "field": "bench_test_report_ref"},
             ]},
             output_type="FINDING_PROPOSAL", unknown_behavior="HUMAN_REVIEW",
+            source_location_ids=[citations["bench_test"]],
         ),
     )
     requirement_versions["bench_test"] = rv
@@ -717,6 +829,7 @@ def build_meddevice_content(client, writer):
                 {"op": "not_exists", "field": "notified_body_signoff_ref"},
             ]},
             output_type="FINDING_PROPOSAL", unknown_behavior="HUMAN_REVIEW",
+            source_location_ids=[citations["notified_body"]],
         ),
     )
     requirement_versions["notified_body"] = rv
@@ -751,6 +864,7 @@ def build_meddevice_content(client, writer):
         rule_overrides=dict(
             condition={"op": "equals", "field": "outcome", "value": "MISMATCH"},
             output_type="FINDING_PROPOSAL", unknown_behavior="HUMAN_REVIEW",
+            source_location_ids=[citations["model_name_consistency"]],
         ),
     )
     requirement_versions["model_name_consistency"] = rv
@@ -807,11 +921,18 @@ def build_meddevice_content(client, writer):
 
     release = create_active_release(
         client, writer, category=CATEGORY_MEDDEVICE,
+        source_version_id=source_version["id"],
         rule_version_ids=[v["id"] for v in rule_versions.values()],
         requirement_version_ids=[v["id"] for v in requirement_versions.values()],
     )
 
-    return {"release": release, "requirement_versions": requirement_versions, "rule_versions": rule_versions}
+    return {
+        "release": release,
+        "requirement_versions": requirement_versions,
+        "rule_versions": rule_versions,
+        "source_version": source_version,
+        "citations": citations,
+    }
 
 
 # --- Golden-case input_facts builders ----------------------------------------
