@@ -9,7 +9,9 @@ Structural provenance used to find rows, NOT trust/an app-level flag:
   1. The demo Organization, matched by tl.DEMO_ORG_NAME - owns every
      customer-side row (Product/ProductVersion/ProductMarketState/
      AssessmentRun/StepRun/Finding/FindingRevision/StateSnapshot) via
-     organization_id ON DELETE CASCADE.
+     organization_id ON DELETE CASCADE. Its AuditEvent rows are the one
+     exception (organization_id is ON DELETE RESTRICT there, by design)
+     and are deleted explicitly first - see _delete_customer_side_rows.
   2. Every RequirementVersion/RuleVersion/SourceVersion whose `notes`
      field contains tl.SYNTHETIC_NOTE - the actual deletion key for
      regulatory content, since Requirement/Rule/Source parent rows
@@ -38,6 +40,7 @@ import sys
 
 from app.core.database import build_database
 from app.core.settings import get_settings
+from app.modules.audit.models import AuditEvent
 from app.modules.organization.models import Organization
 from app.modules.regulatory_basis_release.models import RegulatoryBasisRelease
 from app.modules.requirement.models import Requirement
@@ -64,12 +67,36 @@ def _delete_customer_side_rows(db, *, dry_run: bool) -> int:
     (organization_id is ON DELETE CASCADE on both), so by the time step
     2 runs, nothing references the regulatory content anymore. Doing
     this in the other order fails outright on the RESTRICT constraint.
+
+    AuditEvent.organization_id is ALSO ON DELETE RESTRICT (deliberately -
+    "an audit trail must outlive the tenant it describes being deleted",
+    see CLAUDE.md "Audit log"), so any AuditEvent row filed under the
+    demo org blocks the org delete too. In normal demo operation there
+    are none - nothing dispatches the outbox (no scheduled worker) - but
+    the moment anything calls dispatch_pending_events (a rehearsal that
+    exercises the audit trail, a test run against this DB), the demo org
+    accrues AuditEvents and the next reset fails on the RESTRICT. Those
+    rows are themselves synthetic (they only describe synthetic-corpus
+    activity), so this teardown clears them first, the same way it
+    clears everything else the corpus caused to exist.
     """
 
     organizations = db.query(Organization).filter(Organization.name == tl.DEMO_ORG_NAME).all()
     print(f"[1/2] demo organizations matching {tl.DEMO_ORG_NAME!r}: {len(organizations)}")
 
+    org_ids = [organization.id for organization in organizations]
+    audit_event_count = 0
+    if org_ids:
+        audit_event_count = (
+            db.query(AuditEvent).filter(AuditEvent.organization_id.in_(org_ids)).count()
+        )
+    print(f"      audit events filed under those org(s): {audit_event_count}")
+
     if not dry_run:
+        if org_ids:
+            db.query(AuditEvent).filter(
+                AuditEvent.organization_id.in_(org_ids),
+            ).delete(synchronize_session=False)
         for organization in organizations:
             db.delete(organization)
         db.commit()
