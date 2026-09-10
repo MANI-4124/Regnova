@@ -18,6 +18,12 @@ dependencies = [
     "email-validator>=2.0",
     "pyyaml>=6.0",
     "python-multipart>=0.0.9",
+    # HTTP client for the Gemini REST call in app/analysis/GeminiClaimAnalyzer
+    # (Claims semantic analysis). Was a dev-only dep (TestClient pulls it); the
+    # runtime now genuinely needs it. Chosen over the google-genai SDK for full
+    # control over the request shape - the prompt-injection defence depends on
+    # it. See CLAUDE.md "Claims semantic analysis".
+    "httpx>=0.28",
     # Malware scanning (AC-FR-04-01) - a pure-Python TCP client for
     # clamd's INSTREAM protocol, no C extension, so no Windows-specific
     # build fragility (unlike python-magic, deliberately avoided
@@ -29,7 +35,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
-    "httpx>=0.28",
 ]
 
 [tool.pytest.ini_options]

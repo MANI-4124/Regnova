@@ -3,7 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_correlation_id, get_db_session
+from app.analysis import ClaimAnalyzer
+from app.core.dependencies import get_claim_analyzer, get_correlation_id, get_db_session
 from app.modules.rbac.dependencies import require_admin
 from app.modules.state_snapshot.schemas import StateSnapshotResponse
 from app.modules.user.models import User
@@ -17,8 +18,11 @@ router = APIRouter(
 )
 
 
-def get_market_readiness_service(db: Session = Depends(get_db_session)) -> MarketReadinessService:
-    return MarketReadinessService(db)
+def get_market_readiness_service(
+    db: Session = Depends(get_db_session),
+    claim_analyzer: ClaimAnalyzer = Depends(get_claim_analyzer),
+) -> MarketReadinessService:
+    return MarketReadinessService(db, claim_analyzer=claim_analyzer)
 
 
 @router.post(

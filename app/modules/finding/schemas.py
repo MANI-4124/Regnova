@@ -58,6 +58,10 @@ class FindingRevisionResponse(BaseModel):
     rationale: str
     decided_by_user_id: UUID | None
 
+    analysis_method: str | None
+    ai_model_identifier: str | None
+    ai_prompt_version: str | None
+
     action_type: str | None
     suggested_value: str | None
     resolution_criteria: str | None

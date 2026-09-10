@@ -115,6 +115,14 @@ def _build_finding_proposed(db: Session, event) -> AuditEventDraft:
             "observed_value": payload.get("observed_value"),
             "observed_location": payload.get("observed_location"),
             "rationale": payload.get("rationale"),
+            # AI lineage - only set when the Claims semantic analysis hop
+            # raised this Finding; None for every deterministic proposal.
+            # Internal-only, same as rationale: which model and prompt version
+            # produced an AI proposal is RA-facing reproducibility detail, not
+            # something a customer needs on the finding notification.
+            "analysis_method": payload.get("analysis_method"),
+            "ai_model_identifier": payload.get("ai_model_identifier"),
+            "ai_prompt_version": payload.get("ai_prompt_version"),
         },
         product_id=product_id,
         product_market_state_id=product_market_state_id,

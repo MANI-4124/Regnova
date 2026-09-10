@@ -150,6 +150,9 @@ class FindingService:
         rationale: str,
         normalized_value: str | None = None,
         observed_location: dict[str, Any] | None = None,
+        analysis_method: str | None = None,
+        ai_model_identifier: str | None = None,
+        ai_prompt_version: str | None = None,
         correlation_id: str | None = None,
     ) -> Finding | None:
         """
@@ -210,6 +213,9 @@ class FindingService:
             status=FindingStatus.PROPOSED.value,
             hard_gate_effect=hard_gate_effect,
             rationale=rationale,
+            analysis_method=analysis_method,
+            ai_model_identifier=ai_model_identifier,
+            ai_prompt_version=ai_prompt_version,
         )
         self.revisions.create(revision)
 
@@ -233,6 +239,13 @@ class FindingService:
                 "observed_value": observed_value,
                 "observed_location": observed_location,
                 "rationale": rationale,
+                # AI lineage - None for every deterministic proposal; set only
+                # when the Claims semantic analysis hop raised this Finding.
+                # AuditService._build_finding_proposed routes these into
+                # internal_payload (RA-facing), never the customer payload.
+                "analysis_method": analysis_method,
+                "ai_model_identifier": ai_model_identifier,
+                "ai_prompt_version": ai_prompt_version,
             },
             correlation_id=correlation_id,
         )

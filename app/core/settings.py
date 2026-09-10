@@ -73,6 +73,42 @@ class Settings(BaseSettings):
     clamav_timeout_seconds: float = 30.0
 
     # -------------------------------------------------
+    # Claims semantic analysis - see app/analysis/ClaimAnalyzer + CLAUDE.md
+    # -------------------------------------------------
+
+    # Defaults to "stub" (StubClaimAnalyzer - always "not equivalent", never
+    # proposes) for the same reason malware_scanner_backend defaults to "noop":
+    # the AI path stays completely inert until an environment deliberately opts
+    # in. Set to "gemini" via CLAIM_ANALYZER_BACKEND.
+    claim_analyzer_backend: str = "stub"
+
+    # .env ONLY. Never a literal in code, never committed - .env is gitignored
+    # the same way SECRET_KEY / DATABASE_URL are.
+    gemini_api_key: str | None = None
+
+    # Verified working against AI Studio on 2026-09-10 (gemini-2.0-flash and
+    # gemini-2.5-flash are both retired now - the API 404s them). This is a
+    # setting, not hardcoded; the model string that lands on a proposal is
+    # whatever the API reports back (modelVersion), not this default.
+    gemini_model: str = "gemini-3.6-flash"
+
+    claim_analyzer_timeout_seconds: float = 20.0
+
+    # Demo default, flagged for RegNova Knowledge Lead sign-off - no spec number
+    # exists for this the way D5.1 supplies DEFAULT_MIN_CONFIDENCE. equivalent=True
+    # from the model BELOW this threshold -> NO proposal (recorded on the StepRun
+    # trace only). See CLAUDE.md.
+    claim_semantic_confidence_threshold: float = 0.7
+
+    # ⚠ Google's AI Studio free tier may train on submitted inputs. Must be
+    # explicitly set true to use the "gemini" backend at all - a deliberate
+    # speed-bump forcing the operator to assert "only synthetic data is in this
+    # environment". NOT a technical guarantee - the real fix
+    # (Organization.is_synthetic) is logged, not built. See app/analysis/ and
+    # CLAUDE.md "Claims semantic analysis".
+    gemini_synthetic_data_ack: bool = False
+
+    # -------------------------------------------------
     # Pydantic
     # -------------------------------------------------
 

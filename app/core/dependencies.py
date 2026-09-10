@@ -4,6 +4,7 @@ from collections.abc import Generator
 from fastapi import Request
 from sqlalchemy.orm import Session
 
+from app.analysis import ClaimAnalyzer, build_claim_analyzer
 from app.core.settings import get_settings
 from app.scanning import ClamAVScanner, MalwareScanner, NoOpScanner
 from app.storage import DocumentStorage, LocalFilesystemStorage
@@ -80,3 +81,15 @@ def get_malware_scanner() -> MalwareScanner:
     raise RuntimeError(
         f"Unknown malware_scanner_backend: {settings.malware_scanner_backend!r}",
     )
+
+
+def get_claim_analyzer() -> ClaimAnalyzer:
+    """
+    Same plain Depends()-based, override-able shape as get_malware_scanner /
+    get_document_storage - tests replace this via app.dependency_overrides
+    instead of reaching a real LLM. Default resolution
+    (Settings.claim_analyzer_backend == "stub") is StubClaimAnalyzer, always
+    "not equivalent", so no existing test's behaviour changes. See
+    app/analysis/ and CLAUDE.md "Claims semantic analysis".
+    """
+    return build_claim_analyzer(get_settings())

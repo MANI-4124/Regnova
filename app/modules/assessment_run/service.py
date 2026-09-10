@@ -8,7 +8,9 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.analysis import ClaimAnalyzer, ClaimAnalyzerUnavailable, build_claim_analyzer
 from app.common.enums import UnknownBehavior
+from app.core.settings import get_settings
 from app.engine import evaluate_condition
 from app.modules.document_version.models import DocumentVersionStatus
 from app.modules.document_version.repository import (
@@ -71,7 +73,7 @@ class AssessmentRunService:
     for the condition under which this needs to become async.
     """
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, claim_analyzer: ClaimAnalyzer | None = None):
         self.db = db
         self.runs = AssessmentRunRepository(db)
         self.step_runs = StepRunRepository(db)
@@ -86,6 +88,20 @@ class AssessmentRunService:
         self.evidence = EvidenceRepository(db)
         self.document_fields = DocumentFieldRepository(db)
         self.document_field_revisions = DocumentFieldRevisionRepository(db)
+        # CLAIMS-only semantic peer hop (see _maybe_run_claim_semantic_hop and
+        # CLAUDE.md "Claims semantic analysis"). Injected per-request via
+        # get_claim_analyzer; falls back to the configured backend (default:
+        # StubClaimAnalyzer, always "not equivalent") when constructed outside
+        # a request, so MarketReadinessService and any script behave per
+        # settings.
+        _settings = get_settings()
+        self.claim_analyzer = (
+            claim_analyzer if claim_analyzer is not None
+            else build_claim_analyzer(_settings)
+        )
+        self.claim_semantic_confidence_threshold = (
+            _settings.claim_semantic_confidence_threshold
+        )
 
     def hash_facts(self, facts: dict[str, Any]) -> str:
         """
@@ -359,9 +375,13 @@ class AssessmentRunService:
             subject_facts = {"product": product_facts, **subject}
 
             for rule_version in rule_versions:
-                self._run_step(
+                deterministic_result = self._run_step(
                     run, dimension, rule_version, subject_key, subject_facts,
                     correlation_id=correlation_id,
+                )
+                self._maybe_run_claim_semantic_hop(
+                    run, dimension, rule_version, subject_key, subject_facts,
+                    deterministic_result, correlation_id=correlation_id,
                 )
 
         return len(subjects)
@@ -826,7 +846,7 @@ class AssessmentRunService:
         subject_key: str | None,
         facts: dict[str, Any],
         correlation_id: str | None = None,
-    ) -> None:
+    ):
         input_hash = self.hash_facts(facts)
 
         step = StepRun(
@@ -850,7 +870,7 @@ class AssessmentRunService:
             step.error_message = str(exc)
             self.step_runs.create(step)
             self.db.commit()
-            return
+            return None
 
         step.outcome = result.outcome
         step.unknown_reason = result.unknown_reason
@@ -859,6 +879,7 @@ class AssessmentRunService:
         self.db.commit()
 
         self._apply_output(run, rule_version, step, result, facts, correlation_id=correlation_id)
+        return result
 
     def _effective_unknown_behavior(self, result, rule_version) -> str:
         if result.unknown_reason == "low_confidence":
@@ -891,6 +912,134 @@ class AssessmentRunService:
         # EVIDENCE_REQUEST / WORKFLOW_GATE / CALCULATION_COMPONENT: stubbed
         # in this pass - no Evidence/Document or workflow-engine model
         # exists yet to write anything meaningful to.
+
+    # --- Claims semantic analysis peer hop -------------------------------
+    #
+    # A sibling of evaluate_condition, NOT a replacement (CLAUDE.md "Claims
+    # semantic analysis"). The deterministic rule always runs first and
+    # unconditionally; this runs only after it, only for opted-in rules, and
+    # only produces a Finding *proposal* through the existing propose() path -
+    # never a determination, never a state/gate/progress change directly.
+
+    def _maybe_run_claim_semantic_hop(
+        self, run, dimension, rule_version, subject_key, facts, deterministic_result,
+        correlation_id: str | None = None,
+    ) -> None:
+        # Three independent gates, all required:
+        if dimension != "CLAIMS":
+            return
+        if rule_version.ai_analysis_mode != "SEMANTIC_EQUIVALENCE":
+            return
+        if rule_version.output_type != RuleOutputType.FINDING_PROPOSAL.value:
+            return
+        # ...and only for claims the exact-match rule let through. That gap is
+        # the point. A deterministic MATCH already produced a Finding; a
+        # deterministic crash (None) or UNKNOWN is handled by existing paths.
+        if deterministic_result is None or deterministic_result.outcome != "NO_MATCH":
+            return
+
+        claim_text = facts.get("wording")
+        if not isinstance(claim_text, str) or not claim_text.strip():
+            return
+
+        requirement_version = None
+        if rule_version.requirement_version_id:
+            requirement_version = self.requirement_versions.get_by_id_only(
+                rule_version.requirement_version_id,
+            )
+        if requirement_version is None:
+            return
+        requirement_statement = requirement_version.canonical_statement
+
+        hop_facts = {
+            "requirement_statement": requirement_statement,
+            "claim_text": claim_text,
+        }
+        step = StepRun(
+            assessment_run_id=run.id,
+            dimension=dimension,
+            step_type=StepType.AI_ANALYSIS.value,
+            rule_version_id=rule_version.id,
+            subject_key=subject_key,
+            input_facts=hop_facts,
+            input_hash=self.hash_facts(hop_facts),
+            status=StepRunStatus.COMPLETED.value,
+        )
+
+        try:
+            ai_result = self.claim_analyzer.analyze_claim(
+                requirement_statement=requirement_statement,
+                claim_text=claim_text,
+            )
+        except ClaimAnalyzerUnavailable as exc:
+            # Graceful degradation: recorded on THIS StepRun only. The
+            # AI_ANALYSIS step_type is excluded from _derive_dimension_state,
+            # so this failure never touches dimension state / gate / progress /
+            # reason codes. The assessment completes on the deterministic
+            # rules alone.
+            step.status = StepRunStatus.FAILED.value
+            step.outcome = "UNKNOWN"
+            step.unknown_reason = "ai_unavailable"
+            step.error_message = f"claim analyzer unavailable ({exc.reason})"
+            step.trace = [{"step": "ai_semantic", "unavailable_reason": exc.reason}]
+            self.step_runs.create(step)
+            self.db.commit()
+            return
+
+        proposes = (
+            ai_result.equivalent
+            and ai_result.confidence >= self.claim_semantic_confidence_threshold
+        )
+        step.outcome = "MATCH" if proposes else "NO_MATCH"
+        step.trace = [{
+            "step": "ai_semantic",
+            "model_identifier": ai_result.model_identifier,
+            "prompt_version": ai_result.prompt_version,
+            "equivalent": ai_result.equivalent,
+            "confidence": ai_result.confidence,
+            "confidence_threshold": self.claim_semantic_confidence_threshold,
+            "reasoning": ai_result.reasoning,
+            "proposed_finding": proposes,
+        }]
+        self.step_runs.create(step)
+        self.db.commit()
+
+        if proposes:
+            self._propose_semantic_finding(
+                run, rule_version, requirement_version, subject_key, claim_text,
+                ai_result, correlation_id=correlation_id,
+            )
+
+    def _propose_semantic_finding(
+        self, run, rule_version, requirement_version, subject_key, claim_text, ai_result,
+        correlation_id: str | None = None,
+    ) -> None:
+        rationale = (
+            f"AI semantic analysis (model={ai_result.model_identifier}, "
+            f"prompt={ai_result.prompt_version}, confidence={ai_result.confidence:.2f}): "
+            f"this claim is semantically equivalent to a prohibited claim. "
+            f"{ai_result.reasoning} "
+            f"AI-proposed - requires human review; not a final determination."
+        )
+        self.findings.propose(
+            organization_id=run.organization_id,
+            product_market_state_id=run.product_market_state_id,
+            dimension="CLAIMS",
+            assessment_run_id=run.id,
+            requirement_version_id=rule_version.requirement_version_id,
+            rule_version_id=rule_version.id,
+            subject_key=subject_key,
+            issue_type=requirement_version.obligation_type,
+            observed_value=claim_text,
+            severity=requirement_version.default_severity,
+            hard_gate_effect=requirement_version.is_hard_gate,
+            rationale=rationale,
+            analysis_method="AI_SEMANTIC",
+            ai_model_identifier=ai_result.model_identifier,
+            ai_prompt_version=ai_result.prompt_version,
+            correlation_id=correlation_id,
+        )
+        self.db.commit()
 
     def _resolve_applicability_outcome(self, result, unknown_behavior: str) -> str:
         if result.outcome == "MATCH":
@@ -1048,7 +1197,17 @@ class AssessmentRunService:
         # Finding nor a RequirementResult, so RequirementResult alone
         # would silently lose that signal and the dimension would read
         # COMPLIANT instead of PENDING_INPUT.
-        steps = self.step_runs.get_for_run_dimension(assessment_run_id, dimension)
+        # AI_ANALYSIS StepRuns (the Claims semantic peer hop) are recorded for
+        # audit but MUST NOT influence the deterministic dimension state - a
+        # failed or UNKNOWN AI call cannot force HUMAN_REVIEW/engine-error, and
+        # an AI "match" doesn't move the state here. An AI-*proposed* Finding
+        # still counts, via findings_proposed / has_open_finding below - that's
+        # a real Finding a human dispositions, exactly like a deterministic
+        # one. See CLAUDE.md "Claims semantic analysis".
+        steps = [
+            s for s in self.step_runs.get_for_run_dimension(assessment_run_id, dimension)
+            if s.step_type == StepType.RULE_EVALUATION.value
+        ]
         results = self.requirement_results.get_for_run_dimension(assessment_run_id, dimension)
         findings_proposed = self.finding_revisions.count_proposed_for_run_dimension(
             assessment_run_id,

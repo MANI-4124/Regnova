@@ -154,6 +154,19 @@ class RuleVersion(
         nullable=False,
     )
 
+    # --- AI analysis opt-in (Claims semantic analysis) ---
+    # NULL = deterministic only - every rule, unchanged. "SEMANTIC_EQUIVALENCE"
+    # = also run the AI semantic peer hop when this rule's deterministic
+    # condition returns NO_MATCH (CLAIMS dimension only, FINDING_PROPOSAL only -
+    # see AssessmentRunService._maybe_run_claim_semantic_hop). Open string, not
+    # an enum - one value now, same "needs real definition before constraining"
+    # treatment as obligation_type/verification_level. See CLAUDE.md "Claims
+    # semantic analysis".
+    ai_analysis_mode: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
+
     # --- Governance ---
 
     author_user_id: Mapped[UUID | None] = mapped_column(

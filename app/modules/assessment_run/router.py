@@ -5,7 +5,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_correlation_id, get_db_session
+from app.analysis import ClaimAnalyzer
+from app.core.dependencies import get_claim_analyzer, get_correlation_id, get_db_session
 from app.modules.rbac.dependencies import require_admin, require_manager
 from app.modules.user.models import User
 
@@ -26,8 +27,9 @@ router = APIRouter(
 
 def get_assessment_run_service(
     db: Session = Depends(get_db_session),
+    claim_analyzer: ClaimAnalyzer = Depends(get_claim_analyzer),
 ) -> AssessmentRunService:
-    return AssessmentRunService(db)
+    return AssessmentRunService(db, claim_analyzer=claim_analyzer)
 
 
 @router.get(

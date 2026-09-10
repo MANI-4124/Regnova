@@ -23,6 +23,8 @@ class RuleVersionCreate(BaseModel):
 
     output_type: str
 
+    ai_analysis_mode: str | None = None
+
     approval_policy: str | None = None
 
     effective_from: datetime | None = None
@@ -52,6 +54,8 @@ class RuleVersionUpdate(BaseModel):
     unknown_behavior: str | None = None
 
     output_type: str | None = None
+
+    ai_analysis_mode: str | None = None
 
     approval_policy: str | None = None
 
@@ -98,6 +102,8 @@ class RuleVersionResponse(BaseModel):
     unknown_behavior: str
 
     output_type: str
+
+    ai_analysis_mode: str | None
 
     author_user_id: UUID | None
     reviewer_user_id: UUID | None

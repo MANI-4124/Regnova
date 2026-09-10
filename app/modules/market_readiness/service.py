@@ -6,6 +6,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.analysis import ClaimAnalyzer
 from app.core.settings import get_settings
 from app.modules.assessment_run.models import AssessmentRun, AssessmentRunStatus, DimensionAssessmentState
 from app.modules.assessment_run.repository import AssessmentRunRepository, DimensionAssessmentRepository
@@ -76,14 +77,14 @@ class MarketReadinessService:
     of B5/B3/FR-05 concepts onto what's actually built.
     """
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, claim_analyzer: ClaimAnalyzer | None = None):
         self.db = db
         self.states = ProductMarketStateRepository(db)
         self.product_versions = ProductVersionRepository(db)
         self.releases = RegulatoryBasisReleaseRepository(db)
         self.runs = AssessmentRunRepository(db)
         self.dimension_assessments = DimensionAssessmentRepository(db)
-        self.assessment_runs = AssessmentRunService(db)
+        self.assessment_runs = AssessmentRunService(db, claim_analyzer=claim_analyzer)
         self.requirement_versions = RequirementVersionRepository(db)
         self.requirement_results = RequirementResultRepository(db)
         self.findings = FindingRepository(db)

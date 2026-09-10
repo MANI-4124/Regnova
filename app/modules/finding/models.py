@@ -265,6 +265,25 @@ class FindingRevision(
         nullable=True,
     )
 
+    # --- AI lineage ---
+    # C7's "AI lineage" group. CLAUDE.md previously noted this group as
+    # deliberately absent ("no AI/RA-review layer exists yet to populate
+    # them"); the narrow slice that first needs it also adds it, scoped to
+    # exactly what it needs. Populated ONLY for a Finding raised by the Claims
+    # semantic analysis hop (see app/analysis/ +
+    # AssessmentRunService._propose_semantic_finding):
+    #   analysis_method     - NULL/"DETERMINISTIC" for every engine- or
+    #                         human-written revision; "AI_SEMANTIC" marks one
+    #                         the AI raised.
+    #   ai_model_identifier - which model produced it (as the provider
+    #                         reported it), so the proposal is auditable.
+    #   ai_prompt_version   - which prompt version produced it, so it's
+    #                         reproducible.
+    # See CLAUDE.md "Claims semantic analysis".
+    analysis_method: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    ai_model_identifier: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    ai_prompt_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
     # --- Recommendation ---
     # Deliberately unpopulated in this pass - RuleVersion has nowhere to
     # source a structured action template from yet (see CLAUDE.md).
@@ -297,10 +316,9 @@ class FindingRevision(
     )
 
     # --- Resolution ---
-    # AI lineage and Human lineage groups are omitted entirely for this
-    # pass (confirmed) - no AI/RA-review layer exists yet to populate
-    # them, and unlike Recommendation there's no rule-authoring-time
-    # data that would need a column ready in advance.
+    # Human lineage group is still omitted (no RA-review layer). The AI
+    # lineage group above was added by the Claims semantic analysis slice -
+    # see CLAUDE.md "Claims semantic analysis".
 
     resolution_decision: Mapped[str | None] = mapped_column(
         String(50),
