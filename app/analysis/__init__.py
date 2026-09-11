@@ -8,16 +8,16 @@ from __future__ import annotations
 # provider MUST NOT be sent real customer content — synthetic / TESTLAND data
 # only — until an enterprise (paid, no-training) agreement is in place.
 #
-# Enforcement today is layered but NOT absolute:
+# Enforcement is layered:
 #   - the default backend is "stub" (Settings.semantic_analyzer_backend), so
 #     Gemini is unreachable unless an operator deliberately opts an environment in;
 #   - GeminiSemanticAnalyzer.assess raises AiAnalyzerUnavailable unless
 #     GEMINI_SYNTHETIC_DATA_ACK is set true — the operator must assert it;
-#   - this comment plus a CLAUDE.md note.
-#
-# The REAL fix — an Organization.is_synthetic flag gating the hop per tenant so
-# only demo/synthetic orgs can ever reach an external LLM — is LOGGED, NOT BUILT.
-# See CLAUDE.md "Semantic analysis (Claims + Label)".
+#   - Organization.is_synthetic — the REAL, structural gate, checked by the
+#     CALLER (AssessmentRunService._run_semantic_hop) against the organization
+#     actually running the hop, not just an operator's environment-wide
+#     assertion. See CLAUDE.md "Ask RegNova" for the full design (built
+#     alongside Ask RegNova, reused here and by app/extraction/).
 # ============================================================================
 
 import json

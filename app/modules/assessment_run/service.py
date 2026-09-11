@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.analysis import (
     AiAnalyzerUnavailable,
+    GeminiSemanticAnalyzer,
     SemanticAnalyzer,
     SemanticQuestion,
     build_semantic_analyzer,
@@ -23,6 +24,7 @@ from app.modules.document_version.repository import (
     DocumentFieldRevisionRepository,
 )
 from app.modules.evidence.repository import EvidenceRepository
+from app.modules.organization.service import require_organization_synthetic
 from app.modules.finding.repository import FindingRevisionRepository
 from app.modules.finding.service import FindingService
 from app.modules.product_market_state.exceptions import ProductMarketStateNotFound
@@ -1075,6 +1077,27 @@ class AssessmentRunService:
         )
 
         try:
+            # Organization.is_synthetic gate (see CLAUDE.md "Ask
+            # RegNova") - checked against the INJECTED analyzer's own
+            # type, not a settings string: a real external call only
+            # ever happens through GeminiSemanticAnalyzer specifically,
+            # so this stays inert for Stub/test-double analyzers
+            # regardless of what Settings.semantic_analyzer_backend
+            # happens to say in a given environment (e.g. a dev .env
+            # left pointed at "gemini" while a test injects its own
+            # fake analyzer via dependency_overrides - the settings
+            # string alone would have wrongly gated that fake). A non-
+            # synthetic organization degrades exactly like any other
+            # AiAnalyzerUnavailable reason - no separate code path.
+            if (
+                isinstance(self.semantic_analyzer, GeminiSemanticAnalyzer)
+                and not require_organization_synthetic(self.db, run.organization_id)
+            ):
+                raise AiAnalyzerUnavailable(
+                    "organization_not_synthetic",
+                    "Organization.is_synthetic is not set - the Gemini free tier "
+                    "must only ever see confirmed-synthetic organizations' data.",
+                )
             ai_result = self.semantic_analyzer.assess(
                 question=question,
                 requirement_statement=requirement_statement,

@@ -48,6 +48,7 @@ from app.modules.document_version.models import (
 )
 from app.modules.evidence.models import Evidence
 from app.modules.export.models import Export
+from app.modules.ask_regnova.models import AskRegnovaQuery
 # migrations/env.py
 
 import app.models
@@ -89,4 +90,5 @@ __all__ = [
     "DocumentFieldRevision",
     "Evidence",
     "Export",
+    "AskRegnovaQuery",
 ]

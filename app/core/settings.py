@@ -142,6 +142,25 @@ class Settings(BaseSettings):
     document_extractor_max_content_bytes: int = 15 * 1024 * 1024
 
     # -------------------------------------------------
+    # Ask RegNova (FR-11) - see app/query_classification/ +
+    # app/modules/ask_regnova/ + CLAUDE.md "Ask RegNova". Reuses
+    # gemini_api_key/gemini_model/ai_analyzer_timeout_seconds/
+    # gemini_synthetic_data_ack above - same account, same constraint.
+    # -------------------------------------------------
+
+    # Defaults to "stub" for the same "invisible until an environment
+    # deliberately opts in" reason as the other two AI backends. Set to
+    # "gemini" via QUERY_CLASSIFIER_BACKEND.
+    query_classifier_backend: str = "stub"
+
+    # Demo default, flagged for RegNova Knowledge Lead sign-off, same
+    # status as the semantic-analysis thresholds - no spec number exists
+    # for this either. A classification below this -> treated as
+    # UNSUPPORTED (no guessed answer), regardless of which class/intent
+    # the model actually picked.
+    ask_regnova_classification_confidence_threshold: float = 0.6
+
+    # -------------------------------------------------
     # Pydantic
     # -------------------------------------------------
 

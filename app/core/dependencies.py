@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.analysis import SemanticAnalyzer, build_semantic_analyzer
 from app.core.settings import get_settings
 from app.extraction import DocumentExtractor, build_document_extractor
+from app.query_classification import QueryClassifier, build_query_classifier
 from app.scanning import ClamAVScanner, MalwareScanner, NoOpScanner
 from app.storage import DocumentStorage, LocalFilesystemStorage
 
@@ -107,3 +108,14 @@ def get_document_extractor() -> DocumentExtractor:
     extraction".
     """
     return build_document_extractor(get_settings())
+
+
+def get_query_classifier() -> QueryClassifier:
+    """
+    Same plain Depends()-based, override-able shape as the other three
+    technical-layer providers above. Default resolution
+    (Settings.query_classifier_backend == "stub") is StubQueryClassifier,
+    always UNSUPPORTED at confidence 0, so no test needs a real backend.
+    See app/query_classification/ and CLAUDE.md "Ask RegNova".
+    """
+    return build_query_classifier(get_settings())

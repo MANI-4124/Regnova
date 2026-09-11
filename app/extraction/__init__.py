@@ -11,15 +11,14 @@ from __future__ import annotations
 # documents — synthetic / TESTLAND data only — until an enterprise (paid,
 # no-training) agreement is in place.
 #
-# Enforcement today is layered but NOT absolute, identical shape to
-# app/analysis/: default backend is "noop" (Settings.document_extractor_backend);
-# GeminiDocumentExtractor.extract raises DocumentExtractionUnavailable unless
-# GEMINI_SYNTHETIC_DATA_ACK is set true (the SAME flag app/analysis/ uses — one
-# operator assertion covers both, since it's the same account/constraint); this
-# comment plus a CLAUDE.md note.
-#
-# The REAL fix — Organization.is_synthetic — is LOGGED, NOT BUILT (see
-# app/analysis/__init__.py and CLAUDE.md "Semantic analysis (Claims + Label)").
+# Enforcement is layered, identical shape to app/analysis/: default backend is
+# "noop" (Settings.document_extractor_backend); GeminiDocumentExtractor.extract
+# raises DocumentExtractionUnavailable unless GEMINI_SYNTHETIC_DATA_ACK is set
+# true (the SAME flag app/analysis/ uses); AND Organization.is_synthetic — the
+# REAL, structural gate, checked by the caller (DocumentVersionService.
+# _run_extraction) against the organization actually uploading the document,
+# not just an operator's environment-wide assertion. See CLAUDE.md
+# "Ask RegNova" for the full design (built alongside Ask RegNova).
 # ============================================================================
 
 import base64

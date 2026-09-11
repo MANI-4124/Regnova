@@ -15,11 +15,14 @@ from app.modules.organization.router import router as organization_router
 from app.modules.role.router import router as role_router
 from app.modules.source.router import router as source_router
 from app.modules.source_version.router import router as source_version_router
+from app.modules.source_version.router import unscoped_router as source_version_unscoped_router
 from app.modules.source_location.router import router as source_location_router
 from app.modules.requirement.router import router as requirement_router
 from app.modules.requirement_version.router import router as requirement_version_router
+from app.modules.requirement_version.router import unscoped_router as requirement_version_unscoped_router
 from app.modules.rule.router import router as rule_router
 from app.modules.rule_version.router import router as rule_version_router
+from app.modules.rule_version.router import unscoped_router as rule_version_unscoped_router
 from app.modules.regulatory_basis_release.router import router as regulatory_basis_release_router
 from app.modules.product_market_state.router import router as product_market_state_router
 from app.modules.assessment_run.router import router as assessment_run_router
@@ -34,6 +37,7 @@ from app.modules.document_version.router import router as document_version_route
 from app.modules.evidence.router import router as evidence_router
 from app.modules.audit.router import router as audit_router
 from app.modules.export.router import router as export_router
+from app.modules.ask_regnova.router import router as ask_regnova_router
 
 
 @asynccontextmanager
@@ -74,11 +78,14 @@ def create_app() -> FastAPI:
     app.include_router(product_version_router)
     app.include_router(source_router)
     app.include_router(source_version_router)
+    app.include_router(source_version_unscoped_router)
     app.include_router(source_location_router)
     app.include_router(requirement_router)
     app.include_router(requirement_version_router)
+    app.include_router(requirement_version_unscoped_router)
     app.include_router(rule_router)
     app.include_router(rule_version_router)
+    app.include_router(rule_version_unscoped_router)
     app.include_router(regulatory_basis_release_router)
     app.include_router(product_market_state_router)
     app.include_router(assessment_run_router)
@@ -93,6 +100,7 @@ def create_app() -> FastAPI:
     app.include_router(evidence_router)
     app.include_router(audit_router)
     app.include_router(export_router)
+    app.include_router(ask_regnova_router)
     register_exception_handlers(app)
 
     @app.get("/")

@@ -24,6 +24,10 @@ router = APIRouter(
     tags=["Source Versions"],
 )
 
+# Unscoped - see requirement_version/router.py's own unscoped_router for
+# the full reasoning (CLAUDE.md "Ask RegNova").
+unscoped_router = APIRouter(tags=["Source Versions"])
+
 
 def get_source_version_service(
     db: Session = Depends(get_db_session),
@@ -41,6 +45,18 @@ def get_source_versions(
     service: SourceVersionService = Depends(get_source_version_service),
 ):
     return service.get_all(source_id)
+
+
+@unscoped_router.get(
+    "/source-versions/{version_id}",
+    response_model=SourceVersionResponse,
+)
+def get_source_version_unscoped(
+    version_id: UUID,
+    current_user: User = Depends(require_employee),
+    service: SourceVersionService = Depends(get_source_version_service),
+):
+    return service.get_by_id_only(version_id)
 
 
 @router.get(

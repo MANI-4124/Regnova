@@ -8,11 +8,17 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.core.settings import Settings, get_settings
-from app.extraction import DocumentExtractionUnavailable, DocumentExtractor, EXTRACTION_SCHEMAS
+from app.extraction import (
+    DocumentExtractionUnavailable,
+    DocumentExtractor,
+    EXTRACTION_SCHEMAS,
+    GeminiDocumentExtractor,
+)
 from app.modules.audit.repository import OutboxRepository
 from app.modules.document.exceptions import DocumentNotFound
 from app.modules.document.repository import DocumentRepository
 from app.modules.evidence.repository import EvidenceRepository
+from app.modules.organization.service import require_organization_synthetic
 from app.scanning import MalwareScanner, ScanOutcome, ScannerUnavailable
 from app.storage import DocumentStorage
 
@@ -438,6 +444,21 @@ class DocumentVersionService:
         CLAUDE.md "Document extraction".
         """
         try:
+            # Organization.is_synthetic gate (see CLAUDE.md "Ask
+            # RegNova") - checked against the INJECTED extractor's own
+            # type, not a settings string - see AssessmentRunService's
+            # own identical guard for why. Degrades exactly like any
+            # other DocumentExtractionUnavailable reason - no separate
+            # path.
+            if (
+                isinstance(self.extractor, GeminiDocumentExtractor)
+                and not require_organization_synthetic(self.db, organization_id)
+            ):
+                raise DocumentExtractionUnavailable(
+                    "organization_not_synthetic",
+                    "Organization.is_synthetic is not set - the Gemini free tier "
+                    "must only ever see confirmed-synthetic organizations' data.",
+                )
             result = self.extractor.extract(
                 document_type=document_type, content=content, content_type=version.content_type,
             )

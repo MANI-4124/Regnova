@@ -357,3 +357,38 @@ def test_label_injection_field_text_is_confined():
         raise AssertionError("expected AiAnalyzerUnavailable")
     except AiAnalyzerUnavailable as exc:
         assert exc.reason == "schema_invalid"
+
+
+def test_gemini_hop_blocked_for_non_synthetic_organization(client, db, tenant_a, regulatory_content_writer):
+    """
+    Organization.is_synthetic gate (see CLAUDE.md "Ask RegNova") - a REAL
+    GeminiSemanticAnalyzer (bogus key, synthetic_data_ack=True) is
+    installed directly. If the guard did NOT fire first, assess() itself
+    would attempt a real HTTP call and fail with "http_error" - the
+    guard must fire BEFORE that, producing "organization_not_synthetic"
+    specifically, proving the check runs against the ORGANIZATION, not
+    just against whether a key happens to be configured.
+    """
+    from app.modules.organization.models import Organization
+
+    org = db.get(Organization, tenant_a["organization"].id)
+    assert org.is_synthetic is False  # the default - confirms the premise
+
+    _build_ai_label_rule(client, regulatory_content_writer)
+    _install(GeminiSemanticAnalyzer(
+        api_key="not-a-real-key", model="gemini-3.6-flash", timeout_seconds=1.0, synthetic_data_ack=True,
+    ))
+    _, state = _ready_state(client, tenant_a)
+
+    run = _assessment_run(client, tenant_a, state["id"], value=INADEQUATE)
+    assert run.status_code == 200 and run.json()["status"] == "COMPLETED"
+
+    run_id = client.get(
+        "/assessment-runs", params={"product_market_state_id": state["id"]}, headers=tenant_a["headers"],
+    ).json()[0]["id"]
+    steps = _run_detail(client, tenant_a, state["id"], run_id)["step_runs"]
+    ai_steps = [s for s in steps if s["step_type"] == "AI_ANALYSIS"]
+    assert len(ai_steps) == 1
+    assert ai_steps[0]["status"] == "FAILED"
+    assert ai_steps[0]["trace"][0]["unavailable_reason"] == "organization_not_synthetic"
+    assert _findings(client, tenant_a, state["id"]) == []

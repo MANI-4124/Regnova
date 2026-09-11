@@ -90,6 +90,18 @@ class RuleVersionService:
 
         return version
 
+    def get_by_id_only(self, version_id: UUID) -> RuleVersion:
+        """
+        Unscoped - no rule_id needed. See RequirementVersionService's
+        own get_by_id_only and CLAUDE.md "Ask RegNova".
+        """
+        version = self.repository.get_by_id_only(version_id)
+
+        if version is None:
+            raise RuleVersionNotFound()
+
+        return version
+
     def create(
         self,
         rule_id: UUID,

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.common.repository import BaseRepository
 
-from .models import DocumentField, DocumentFieldRevision, DocumentVersion
+from .models import DocumentField, DocumentFieldRevision, DocumentVersion, DocumentVersionStatus
 
 
 class DocumentVersionRepository(
@@ -29,6 +29,24 @@ class DocumentVersionRepository(
                 DocumentVersion.document_id == document_id,
             )
             .order_by(DocumentVersion.version_number.desc())
+        )
+
+        return list(self.db.scalars(statement))
+
+    def get_all_verified_for_organization(
+        self,
+        organization_id: UUID,
+    ) -> list[DocumentVersion]:
+        """
+        Org-wide, current + VERIFIED only - Ask RegNova's
+        DOCUMENTS_EXPIRING_WITHIN intent (see CLAUDE.md "Ask RegNova")
+        must never surface an unreviewed or superseded version's fields
+        as if they were live facts about the portfolio.
+        """
+        statement = select(DocumentVersion).where(
+            DocumentVersion.organization_id == organization_id,
+            DocumentVersion.status == DocumentVersionStatus.VERIFIED.value,
+            DocumentVersion.superseded_by_id.is_(None),
         )
 
         return list(self.db.scalars(statement))

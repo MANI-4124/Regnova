@@ -24,6 +24,10 @@ router = APIRouter(
     tags=["Rule Versions"],
 )
 
+# Unscoped - see requirement_version/router.py's own unscoped_router for
+# the full reasoning (CLAUDE.md "Ask RegNova").
+unscoped_router = APIRouter(tags=["Rule Versions"])
+
 
 def get_rule_version_service(
     db: Session = Depends(get_db_session),
@@ -41,6 +45,18 @@ def get_rule_versions(
     service: RuleVersionService = Depends(get_rule_version_service),
 ):
     return service.get_all(rule_id)
+
+
+@unscoped_router.get(
+    "/rule-versions/{version_id}",
+    response_model=RuleVersionResponse,
+)
+def get_rule_version_unscoped(
+    version_id: UUID,
+    current_user: User = Depends(require_employee),
+    service: RuleVersionService = Depends(get_rule_version_service),
+):
+    return service.get_by_id_only(version_id)
 
 
 @router.get(

@@ -39,6 +39,25 @@ class ProductMarketStateRepository(BaseRepository[ProductMarketState]):
 
         return list(self.db.scalars(statement))
 
+    def get_all_for_organization(
+        self,
+        organization_id: UUID,
+        gate: str | None = None,
+    ) -> list[ProductMarketState]:
+        """
+        Org-wide, no product_id - Ask RegNova's PRODUCTS_BY_GATE intent
+        (see CLAUDE.md "Ask RegNova") counts/lists across the whole
+        portfolio, unlike get_all above which is scoped to one product.
+        """
+        statement = select(ProductMarketState).where(
+            ProductMarketState.organization_id == organization_id,
+        )
+
+        if gate is not None:
+            statement = statement.where(ProductMarketState.gate == gate)
+
+        return list(self.db.scalars(statement))
+
     def get_by_id(
         self,
         organization_id: UUID,

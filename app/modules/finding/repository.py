@@ -80,6 +80,26 @@ class FindingRepository(BaseRepository[Finding]):
 
         return self.db.scalar(statement)
 
+    def get_by_id_only(
+        self,
+        organization_id: UUID,
+        finding_id: UUID,
+    ) -> Finding | None:
+        """
+        Org-scoped lookup by id alone, no product_market_state_id - Ask
+        RegNova's EXPLAIN_FINDING intent only ever receives finding_id
+        from the classifier (see CLAUDE.md "Ask RegNova"), the same
+        "flat id, no parent" shape ProductMarketStateRepository.
+        get_by_id_only and DocumentVersionRepository.get_by_id_for_org
+        already use for their own flat-route callers.
+        """
+        statement = select(Finding).where(
+            Finding.id == finding_id,
+            Finding.organization_id == organization_id,
+        )
+
+        return self.db.scalar(statement)
+
     def find_open_match(
         self,
         product_market_state_id: UUID,

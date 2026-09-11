@@ -21,6 +21,26 @@ from .schemas import (
 )
 
 
+def require_organization_synthetic(db: Session, organization_id: UUID) -> bool:
+    """
+    True only if Organization.is_synthetic is set - the actual,
+    structural gate the free-tier Gemini training-data warnings across
+    app/analysis/, app/extraction/, and app/query_classification/ named
+    as "the real fix, logged not built" since the first AI slice. Fails
+    closed (False = not eligible for a real external call) if the
+    organization can't be found at all - should never happen for an
+    authenticated request, but a lookup failure must never accidentally
+    read as "eligible". Called from each AI-hop call site (the semantic
+    peer hop, document extraction, Ask RegNova's classifier) immediately
+    before invoking a real ("gemini") backend - never for the stub/noop
+    backends, which make no external call regardless and stay exactly as
+    invisible as they were before this flag existed. See CLAUDE.md
+    "Ask RegNova".
+    """
+    organization = OrganizationRepository(db).get_by_id(organization_id)
+    return organization is not None and organization.is_synthetic
+
+
 class OrganizationService:
     """
     Business logic for Organization.

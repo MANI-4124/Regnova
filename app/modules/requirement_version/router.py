@@ -24,6 +24,13 @@ router = APIRouter(
     tags=["Requirement Versions"],
 )
 
+# Unscoped, no requirement_id needed - closes the traceability gap named
+# in CLAUDE.md "Ask RegNova"/"Assessment engine": a Finding only ever
+# carries the bare requirement_version_id, never the parent id the
+# nested route above requires. require_employee - same "citable by any
+# authenticated user" reasoning as every other regulatory-content read.
+unscoped_router = APIRouter(tags=["Requirement Versions"])
+
 
 def get_requirement_version_service(
     db: Session = Depends(get_db_session),
@@ -41,6 +48,18 @@ def get_requirement_versions(
     service: RequirementVersionService = Depends(get_requirement_version_service),
 ):
     return service.get_all(requirement_id)
+
+
+@unscoped_router.get(
+    "/requirement-versions/{version_id}",
+    response_model=RequirementVersionResponse,
+)
+def get_requirement_version_unscoped(
+    version_id: UUID,
+    current_user: User = Depends(require_employee),
+    service: RequirementVersionService = Depends(get_requirement_version_service),
+):
+    return service.get_by_id_only(version_id)
 
 
 @router.get(

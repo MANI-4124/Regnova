@@ -61,6 +61,19 @@ class SourceVersionService:
 
         return version
 
+    def get_by_id_only(self, version_id: UUID) -> SourceVersion:
+        """
+        Unscoped - no source_id needed. See
+        RequirementVersionService.get_by_id_only and CLAUDE.md
+        "Ask RegNova".
+        """
+        version = self.repository.get_by_id_only(version_id)
+
+        if version is None:
+            raise SourceVersionNotFound()
+
+        return version
+
     def create(
         self,
         source_id: UUID,

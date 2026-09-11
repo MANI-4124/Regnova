@@ -425,3 +425,32 @@ def test_gemini_extractor_parse_response_skips_empty_values():
     assert [f.field_key for f in result.fields] == ["manufacturer"]
     assert result.model_identifier == "gemini-3.6-flash"
     assert result.schema_version == spec.schema_version
+
+
+def test_gemini_extraction_blocked_for_non_synthetic_organization(client, db, tenant_a, storage):
+    """
+    Organization.is_synthetic gate (see CLAUDE.md "Ask RegNova") - a REAL
+    GeminiDocumentExtractor (bogus key, synthetic_data_ack=True) is
+    installed directly. If the guard did NOT fire first, extract() itself
+    would attempt a real HTTP call and fail with "http_error" - the
+    guard must fire first, producing "organization_not_synthetic".
+    """
+    from app.modules.organization.models import Organization
+
+    org = db.get(Organization, tenant_a["organization"].id)
+    assert org.is_synthetic is False  # the default - confirms the premise
+
+    real_extractor = GeminiDocumentExtractor(
+        api_key="not-a-real-key", model="gemini-3.6-flash", timeout_seconds=1.0,
+        synthetic_data_ack=True, max_content_bytes=1_000_000,
+    )
+    app.dependency_overrides[get_document_extractor] = lambda: real_extractor
+    try:
+        document = _create_document(client, tenant_a, document_type="GMP_CERTIFICATE")
+        version = _upload_version(client, tenant_a, document["id"])
+    finally:
+        app.dependency_overrides.pop(get_document_extractor, None)
+
+    assert version["status"] == "REVIEW_REQUIRED"
+    assert version["extraction_status"] == "FAILED"
+    assert "organization_not_synthetic" in version["extraction_error"]

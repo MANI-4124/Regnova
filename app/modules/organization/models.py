@@ -68,6 +68,25 @@ class Organization(UUIDMixin, TimestampMixin, Base):
         default=False,
     )
 
+    # True only for an organization whose data is confirmed synthetic
+    # (TESTLAND, and any future demo/sandbox tenant) - the real gate the
+    # free-tier Gemini warnings across app/analysis/app/extraction/
+    # app/query_classification/ always said was "logged, not built".
+    # Same "structural, not API-driven" principle as is_internal above -
+    # never settable via the Create/Update API (no field for it in
+    # organization/schemas.py), only ever set by a direct DB/seed
+    # operation. Deliberately NOT self-service: if a customer could set
+    # this on their own organization, they could unlock the free-tier AI
+    # path on real data just by flipping it - the entire point is that
+    # only RegNova operators (via a script, not the API) ever set it.
+    # See CLAUDE.md "Ask RegNova" / "Semantic analysis (Claims + Label)"
+    # / "Document extraction".
+    is_synthetic: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
     roles = relationship(
     "Role",
     back_populates="organization",

@@ -96,7 +96,22 @@ def build_demo_tenant(db) -> dict:
 
     organization = db.query(Organization).filter(Organization.name == DEMO_ORG_NAME).first()
     if organization is None:
-        organization = Organization(name=DEMO_ORG_NAME, industry="Synthetic Test Fixture", country="US")
+        # is_synthetic=True - TESTLAND is exactly the confirmed-synthetic
+        # data Organization.is_synthetic exists to permit reaching a real
+        # Gemini backend for (see CLAUDE.md "Ask RegNova"). Direct ORM
+        # write, not the Create API - is_synthetic is deliberately not
+        # exposed there, same as is_internal.
+        organization = Organization(
+            name=DEMO_ORG_NAME, industry="Synthetic Test Fixture", country="US", is_synthetic=True,
+        )
+        db.add(organization)
+        db.flush()
+    elif not organization.is_synthetic:
+        # Backfill for a demo org created before Organization.is_synthetic
+        # existed - re-running this script (without a fresh delete first)
+        # must not leave a stale TESTLAND org ineligible for the real
+        # Gemini backend.
+        organization.is_synthetic = True
         db.add(organization)
         db.flush()
 

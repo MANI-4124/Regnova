@@ -77,6 +77,20 @@ class RequirementVersionService:
 
         return version
 
+    def get_by_id_only(self, version_id: UUID) -> RequirementVersion:
+        """
+        Unscoped - no requirement_id needed. Closes the traceability gap
+        named in CLAUDE.md: a Finding only ever carries the bare
+        requirement_version_id, never the parent requirement_id the
+        nested get_by_id above requires. See CLAUDE.md "Ask RegNova".
+        """
+        version = self.repository.get_by_id_only(version_id)
+
+        if version is None:
+            raise RequirementVersionNotFound()
+
+        return version
+
     def create(
         self,
         requirement_id: UUID,
