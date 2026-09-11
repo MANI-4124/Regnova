@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.core.dependencies import get_document_storage
+from app.core.dependencies import get_document_extractor, get_document_storage
+from app.extraction import DocumentExtractor, ExtractedField, ExtractionResult
 from app.main import app
 from app.modules.assessment_run.service import AssessmentRunService
 from app.storage import LocalFilesystemStorage
@@ -941,3 +942,69 @@ def test_stale_evidence_is_excluded_after_document_version_superseded(client, te
     step = detail["step_runs"][0]
     assert step["input_facts"] == {"product": {}, "document_type": "gmp_certificate"}
     assert step["outcome"] == "MATCH"  # missing, per not_exists("status")
+
+
+# --- Document extraction confirmation (see CLAUDE.md "Document extraction") ---
+#
+# Confirms the central claim in that section: a model-extracted
+# confidence needs NO engine changes to hit the existing AC-FR-06-02
+# hard-pin - _build_document_facts_from_evidence already wraps whatever
+# confidence a DocumentFieldRevision carries, regardless of whether a
+# human or the extraction step wrote it.
+
+
+class _FakeExtractor(DocumentExtractor):
+    def __init__(self, fields, model_identifier="fake-vision-1", schema_version="fake-schema-v1"):
+        self._fields = fields
+        self._model_identifier = model_identifier
+        self._schema_version = schema_version
+
+    def extract(self, *, document_type, content, content_type):
+        return ExtractionResult(
+            fields=self._fields, model_identifier=self._model_identifier, schema_version=self._schema_version,
+        )
+
+
+def test_low_confidence_extracted_field_hard_pins_to_human_review_no_engine_changes(
+    client, tenant_a, regulatory_content_writer, storage,
+):
+    """
+    Same rule shape as
+    test_real_evidence_null_confidence_field_is_not_hard_pinned_to_human_review
+    above, but the manufacturer field is written by a (fake) extraction
+    pass at confidence 0.3 - below DEFAULT_MIN_CONFIDENCE (0.5) - instead
+    of manual entry. Engine code is completely unmodified; this is the
+    same _wrap_confidence_value/_build_document_facts_from_evidence path
+    every manually-entered field already went through.
+    """
+    _build_document_rule(
+        client, regulatory_content_writer,
+        condition={"op": "equals", "field": "manufacturer", "value": "Acme Corp"},
+        output_type="REQUIREMENT_RESULT",
+        unknown_behavior="HUMAN_REVIEW",
+    )
+
+    product = _create_product(client, tenant_a)
+    version = _create_version(client, tenant_a, product["id"])
+    state = _create_state(client, tenant_a, product["id"], version["id"])
+
+    app.dependency_overrides[get_document_extractor] = lambda: _FakeExtractor(
+        fields=[ExtractedField(field_key="manufacturer", value="Acme Corp", confidence=0.3)],
+    )
+    try:
+        document = _create_document(client, tenant_a, document_type="GMP_CERTIFICATE")
+        doc_version = _upload_document_version(client, tenant_a, document["id"])
+        assert doc_version["extraction_status"] == "COMPLETED"
+        doc_version = _verify_document_version(client, tenant_a, document["id"], doc_version["id"])
+    finally:
+        app.dependency_overrides.pop(get_document_extractor, None)
+
+    _link_evidence(client, tenant_a, doc_version["id"], product["id"])
+
+    run = _run_assessment(client, tenant_a, state["id"])
+    detail = _get_run_detail(client, tenant_a, state["id"], run["id"])
+
+    step = detail["step_runs"][0]
+    assert step["input_facts"]["manufacturer"] == {"value": "Acme Corp", "confidence": 0.3}
+    assert step["outcome"] == "UNKNOWN"
+    assert detail["dimension_assessments"][0]["state"] == "HUMAN_REVIEW_REQUIRED"

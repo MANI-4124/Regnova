@@ -6,9 +6,11 @@ from sqlalchemy.orm import Session
 from app.core.dependencies import (
     get_correlation_id,
     get_db_session,
+    get_document_extractor,
     get_document_storage,
     get_malware_scanner,
 )
+from app.extraction import DocumentExtractor
 from app.modules.rbac.dependencies import require_employee, require_manager
 from app.modules.user.models import User
 from app.scanning import MalwareScanner
@@ -33,8 +35,9 @@ def get_document_version_service(
     db: Session = Depends(get_db_session),
     storage: DocumentStorage = Depends(get_document_storage),
     scanner: MalwareScanner = Depends(get_malware_scanner),
+    extractor: DocumentExtractor = Depends(get_document_extractor),
 ) -> DocumentVersionService:
-    return DocumentVersionService(db, storage, scanner)
+    return DocumentVersionService(db, storage, scanner, extractor)
 
 
 def get_document_field_service(
@@ -182,6 +185,30 @@ def retry_document_version_scan(
         document_id,
         version_id,
         actor_user_id=current_user.id,
+        correlation_id=correlation_id,
+    )
+
+
+@router.post(
+    "/{version_id}/extract",
+    response_model=DocumentVersionResponse,
+)
+def extract_document_version_fields(
+    document_id: UUID,
+    version_id: UUID,
+    current_user: User = Depends(require_manager),
+    correlation_id: str = Depends(get_correlation_id),
+    service: DocumentVersionService = Depends(get_document_version_service),
+):
+    """
+    On-demand (re-)run of extraction - require_manager, matching
+    verify/retry-scan's own tier (a review/operational action, not
+    routine upload). See CLAUDE.md "Document extraction".
+    """
+    return service.run_extraction(
+        current_user.organization_id,
+        document_id,
+        version_id,
         correlation_id=correlation_id,
     )
 

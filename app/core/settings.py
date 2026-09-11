@@ -116,6 +116,32 @@ class Settings(BaseSettings):
     gemini_synthetic_data_ack: bool = False
 
     # -------------------------------------------------
+    # Document extraction (FR-04's unbuilt half) - see app/extraction/ + CLAUDE.md
+    # "Document extraction". Reuses gemini_api_key/gemini_model/
+    # gemini_synthetic_data_ack above - same account, same free-tier
+    # constraint, not duplicated settings.
+    # -------------------------------------------------
+
+    # Defaults to "noop" for the same reason malware_scanner_backend/
+    # semantic_analyzer_backend do - inert until an environment deliberately
+    # opts in. Set to "gemini" via DOCUMENT_EXTRACTOR_BACKEND.
+    document_extractor_backend: str = "noop"
+
+    # Longer than ai_analyzer_timeout_seconds (20s) - a vision call against a
+    # multi-page PDF is a heavier request than the semantic slices' two short
+    # strings.
+    document_extractor_timeout_seconds: float = 45.0
+
+    # A separate, much smaller cap than document_max_size_bytes (100 MB) -
+    # that number is FR-04's upload limit, not what's practical to send
+    # inline (base64) to a vision API in one request. 15 MB is a
+    # conservative ceiling for inline generateContent calls; a file over
+    # this degrades gracefully (DocumentExtractionUnavailable("too_large")),
+    # same as MAX_SUBJECT_CHARS does for the semantic slices - it never
+    # blocks the upload itself, only skips extraction for that file.
+    document_extractor_max_content_bytes: int = 15 * 1024 * 1024
+
+    # -------------------------------------------------
     # Pydantic
     # -------------------------------------------------
 

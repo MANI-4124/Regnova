@@ -31,6 +31,8 @@ class DocumentVersionResponse(BaseModel):
     review_note: str | None
     malware_signature: str | None
     scan_error: str | None
+    extraction_status: str | None
+    extraction_error: str | None
     notes: str | None
     created_at: datetime
     updated_at: datetime
@@ -79,6 +81,8 @@ class DocumentFieldRevisionResponse(BaseModel):
     method: str
     location: dict[str, Any] | None
     entered_by_user_id: UUID | None
+    ai_model_identifier: str | None
+    ai_prompt_version: str | None
     created_at: datetime
 
 

@@ -43,8 +43,27 @@ class DocumentVersionStatus(str, Enum):
     automatically (an INFECTED scan result - no human ever sees an
     infected file for review).
 
-    PROCESSING/EXTRACTED remain excluded - still describe an OCR/
-    extraction pipeline that doesn't exist in this codebase.
+    PROCESSING is now real too (added alongside document extraction -
+    see CLAUDE.md "Document extraction"): a genuine, measurable
+    duration (a synchronous vision-model call, possibly a timeout),
+    same reasoning as SCANNING. Entered only for a document_type with a
+    shipped extraction schema (app.extraction.EXTRACTION_SCHEMAS) -
+    skipped entirely, not entered-and-no-op'd, for any other type.
+
+    EXTRACTED deliberately does NOT become a real status value, despite
+    FR-04 naming it - a considered call, not an oversight. Unlike
+    SCANNING (which forks into three behaviourally different outcomes -
+    REVIEW_REQUIRED/QUARANTINED/FAILED, each meaning something
+    different a caller must act on differently), PROCESSING has exactly
+    ONE outcome regardless of extraction success or failure:
+    REVIEW_REQUIRED, always - extraction failure must never block
+    anything (graceful degradation: the document stays fully usable via
+    manual entry). "Succeeded with fields" vs. "failed, no fields" is
+    real information, but it's INFORMATIONAL, not behavioural - so it's
+    recorded on extraction_status/extraction_error (mirroring
+    malware_signature/scan_error's own side-column pattern for SCANNING)
+    rather than forking the status enum for a distinction nothing acts
+    on differently.
 
     UPLOADING remains excluded, on the same "don't model a state
     nothing rests in" principle: nothing gates the moment between
@@ -54,6 +73,7 @@ class DocumentVersionStatus(str, Enum):
     """
 
     SCANNING = "SCANNING"
+    PROCESSING = "PROCESSING"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
     VERIFIED = "VERIFIED"
     REJECTED = "REJECTED"
@@ -190,6 +210,24 @@ class DocumentVersion(
         nullable=True,
     )
 
+    # --- Extraction (PROCESSING -> REVIEW_REQUIRED, always) ---
+    # Same "dedicated column, not overloaded review_note" precedent as
+    # the scan columns above - system-written, no reviewer involved.
+    # null means no extraction schema exists yet for this document_type
+    # (PROCESSING was never entered) - not a third status value, see
+    # DocumentVersionStatus's own docstring. See CLAUDE.md "Document
+    # extraction".
+
+    extraction_status: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+    )
+
+    extraction_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
     notes: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,
@@ -263,11 +301,11 @@ class DocumentFieldRevision(
 ):
     """
     Immutable per-correction history of one DocumentField's value -
-    never updated in place. `method` defaults to "MANUAL" for
-    everything this ticket writes; a future OCR/extraction pass adds
-    rows here with method="OCR" plus a model/parser version instead of
-    restructuring anything - see CLAUDE.md "Document storage and
-    versioning".
+    never updated in place. `method` defaults to "MANUAL"; document
+    extraction (see CLAUDE.md "Document extraction") writes rows with
+    method="AI_EXTRACTED" plus ai_model_identifier/ai_prompt_version -
+    the future pass this docstring originally anticipated, landed
+    without restructuring anything, exactly as predicted.
 
     `confidence` is nullable and defaults to null, not 1.0 - a human
     not having expressed doubt about a value isn't the same claim as
@@ -327,6 +365,20 @@ class DocumentFieldRevision(
 
     entered_by_user_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # --- AI lineage (method == "AI_EXTRACTED" only) ---
+    # Same shape as FindingRevision's own AI lineage group. Null for
+    # every MANUAL revision.
+
+    ai_model_identifier: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    ai_prompt_version: Mapped[str | None] = mapped_column(
+        String(50),
         nullable=True,
     )
 

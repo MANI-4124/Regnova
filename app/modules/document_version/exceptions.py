@@ -53,6 +53,22 @@ class DocumentVersionNotEditable(ConflictException):
         )
 
 
+class DocumentTypeHasNoExtractionSchema(ValidationException):
+    """
+    Raised only by the explicit POST .../extract endpoint (a deliberate
+    on-demand re-run action) for a document_type not in
+    app.extraction.EXTRACTION_SCHEMAS - see CLAUDE.md "Document
+    extraction" for which of C8.1's eight types ship now. The upload
+    path itself never raises this - it just skips PROCESSING silently
+    for such a document_type, exactly as before this feature existed.
+    """
+
+    def __init__(self, document_type: str):
+        super().__init__(
+            f"No extraction schema exists yet for document_type {document_type!r}."
+        )
+
+
 class DocumentVersionTransitionNotAllowed(ConflictException):
     """
     verify()/reject()/quarantine() are only reachable from

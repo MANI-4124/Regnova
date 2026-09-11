@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.analysis import SemanticAnalyzer, build_semantic_analyzer
 from app.core.settings import get_settings
+from app.extraction import DocumentExtractor, build_document_extractor
 from app.scanning import ClamAVScanner, MalwareScanner, NoOpScanner
 from app.storage import DocumentStorage, LocalFilesystemStorage
 
@@ -93,3 +94,16 @@ def get_semantic_analyzer() -> SemanticAnalyzer:
     app/analysis/ and CLAUDE.md "Semantic analysis (Claims + Label)".
     """
     return build_semantic_analyzer(get_settings())
+
+
+def get_document_extractor() -> DocumentExtractor:
+    """
+    Same plain Depends()-based, override-able shape as the other three
+    technical-layer providers above - tests replace this via
+    app.dependency_overrides instead of reaching a real vision model.
+    Default resolution (Settings.document_extractor_backend == "noop")
+    is NoOpExtractor, always an empty result, so no existing test's
+    behaviour changes. See app/extraction/ and CLAUDE.md "Document
+    extraction".
+    """
+    return build_document_extractor(get_settings())
