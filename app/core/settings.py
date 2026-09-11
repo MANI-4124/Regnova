@@ -100,6 +100,13 @@ class Settings(BaseSettings):
     # StepRun trace only). See CLAUDE.md.
     claim_semantic_confidence_threshold: float = 0.7
 
+    # Same demo-grade / Knowledge-Lead-sign-off status as the claim threshold
+    # above, tuned separately: judging whether label text substantively
+    # satisfies an obligation is a different task from claim equivalence. A
+    # model "not satisfied" verdict BELOW this -> NO proposal (StepRun trace
+    # only). See CLAUDE.md "Semantic analysis (Claims + Label)".
+    label_semantic_confidence_threshold: float = 0.7
+
     # ⚠ Google's AI Studio free tier may train on submitted inputs. Must be
     # explicitly set true to use the "gemini" backend at all - a deliberate
     # speed-bump forcing the operator to assert "only synthetic data is in this

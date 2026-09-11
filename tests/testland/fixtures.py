@@ -436,6 +436,33 @@ def build_beauty_content(client, writer):
     requirement_versions["label_allergen_applicability"] = rv
     rule_versions["label_allergen_applicability"] = rlv
 
+    # Substantive-satisfaction check for the allergen warning, opted into the
+    # LABEL semantic hop (ai_analysis_mode="SEMANTIC_SATISFACTION"). The
+    # deterministic rule only checks the field is non-empty; the AI hop judges
+    # whether the text actually identifies the allergens (vs. "see our website"
+    # etc.). obligation_type is the lowercase "allergen_warning" - a deliberate
+    # deviation from this corpus's usual UPPER_SNAKE, because the hop's
+    # field-targeting guard is `obligation_type == field_key` (CLAUDE.md
+    # "Semantic analysis (Claims + Label)"), and label field keys are lowercase.
+    rv, rlv = build_requirement_and_rule(
+        client, writer, category="Beauty",
+        requirement_overrides=dict(
+            dimension="LABEL", obligation_type="allergen_warning",
+            canonical_statement=(
+                "The label must carry an allergen warning that identifies the "
+                "specific major allergens present in the product."
+            ),
+            default_severity="MAJOR", is_hard_gate=False,
+        ),
+        rule_overrides=dict(
+            condition={"op": "not_equals", "field": "extracted", "value": ""},
+            output_type="REQUIREMENT_RESULT", unknown_behavior="FAIL_CLOSED",
+            ai_analysis_mode="SEMANTIC_SATISFACTION",
+        ),
+    )
+    requirement_versions["label_allergen_substance"] = rv
+    rule_versions["label_allergen_substance"] = rlv
+
     rv, rlv = build_requirement_and_rule(
         client, writer, category="Beauty",
         requirement_overrides=dict(
@@ -961,12 +988,17 @@ def beauty_filler_facts():
     }
 
 
-def beauty_facts(*, wording, packaging_type="retail", net_quantity_confidence=0.95):
+def beauty_facts(*, wording, packaging_type="retail", net_quantity_confidence=0.95,
+                 allergen_warning="Contains peanuts, tree nuts, soy and wheat."):
     return {
         "CLAIMS": {"product": {}, "claims": [{"claim_id": "c1", "wording": wording}]},
         "LABEL": {"product": {"packaging_type": packaging_type},
-                  "label_fields": [{"field_key": "net_quantity", "value": "50 mL",
-                                     "confidence": net_quantity_confidence}]},
+                  "label_fields": [
+                      {"field_key": "net_quantity", "value": "50 mL",
+                       "confidence": net_quantity_confidence},
+                      {"field_key": "allergen_warning", "value": allergen_warning,
+                       "confidence": 0.95},
+                  ]},
         "INGREDIENTS": {"product": {}, "claims": [{"claim_id": "ing-1", "ingredient_name": "Aqua"}]},
         **beauty_filler_facts(),
     }

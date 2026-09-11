@@ -16,7 +16,7 @@ from app.analysis import (
 )
 from app.common.enums import UnknownBehavior
 from app.core.settings import get_settings
-from app.engine import evaluate_condition
+from app.engine import DEFAULT_MIN_CONFIDENCE, evaluate_condition
 from app.modules.document_version.models import DocumentVersionStatus
 from app.modules.document_version.repository import (
     DocumentFieldRepository,
@@ -105,6 +105,9 @@ class AssessmentRunService:
         )
         self.claim_semantic_confidence_threshold = (
             _settings.claim_semantic_confidence_threshold
+        )
+        self.label_semantic_confidence_threshold = (
+            _settings.label_semantic_confidence_threshold
         )
 
     def hash_facts(self, facts: dict[str, Any]) -> str:
@@ -929,21 +932,8 @@ class AssessmentRunService:
         self, run, dimension, rule_version, subject_key, facts, deterministic_result,
         correlation_id: str | None = None,
     ) -> None:
-        # Three independent gates, all required:
-        if dimension != "CLAIMS":
-            return
-        if rule_version.ai_analysis_mode != "SEMANTIC_EQUIVALENCE":
-            return
-        if rule_version.output_type != RuleOutputType.FINDING_PROPOSAL.value:
-            return
-        # ...and only for claims the exact-match rule let through. That gap is
-        # the point. A deterministic MATCH already produced a Finding; a
-        # deterministic crash (None) or UNKNOWN is handled by existing paths.
-        if deterministic_result is None or deterministic_result.outcome != "NO_MATCH":
-            return
-
-        claim_text = facts.get("wording")
-        if not isinstance(claim_text, str) or not claim_text.strip():
+        mode = rule_version.ai_analysis_mode
+        if mode is None:
             return
 
         requirement_version = None
@@ -953,11 +943,125 @@ class AssessmentRunService:
             )
         if requirement_version is None:
             return
-        requirement_statement = requirement_version.canonical_statement
 
+        # --- CLAIMS: is this claim equivalent to a prohibited one? -------
+        # Runs on a FINDING_PROPOSAL rule the exact-match let through
+        # (deterministic NO_MATCH - that gap is the point). Proposes when the
+        # model says holds=True (equivalent).
+        if dimension == "CLAIMS" and mode == "SEMANTIC_EQUIVALENCE":
+            if rule_version.output_type != RuleOutputType.FINDING_PROPOSAL.value:
+                return
+            if deterministic_result is None or deterministic_result.outcome != "NO_MATCH":
+                return
+            claim_text = facts.get("wording")
+            if not isinstance(claim_text, str) or not claim_text.strip():
+                return
+            self._run_semantic_hop(
+                run, question=SemanticQuestion.CLAIM_EQUIVALENCE, dimension="CLAIMS",
+                rule_version=rule_version, requirement_version=requirement_version,
+                subject_key=subject_key, subject_text=claim_text.strip(),
+                proposes_on_holds=True,
+                observed_value=claim_text,
+                observed_location=None,
+                finding_summary="this claim is semantically equivalent to a prohibited claim.",
+                correlation_id=correlation_id,
+            )
+            return
+
+        # --- LABEL: does this field's text substantively satisfy it? -----
+        # Runs on a REQUIREMENT_RESULT rule the deterministic presence check
+        # PASSED (deterministic MATCH). Proposes when the model says
+        # holds=False (not satisfied). Only for the field the requirement
+        # targets - obligation_type == field_key, or
+        # RequirementVersion.context.target_field_key - because
+        # _run_subject_list_dimension runs every LABEL rule against every field
+        # subject (CLAUDE.md "LABEL dimension cross-application").
+        if dimension == "LABEL" and mode == "SEMANTIC_SATISFACTION":
+            if rule_version.output_type != RuleOutputType.REQUIREMENT_RESULT.value:
+                return
+            if deterministic_result is None or deterministic_result.outcome != "MATCH":
+                return
+
+            field_key = facts.get("field_key")
+            target = (
+                (requirement_version.context or {}).get("target_field_key")
+                or requirement_version.obligation_type
+            )
+            if not isinstance(field_key, str) or not isinstance(target, str):
+                return
+            if field_key.upper() != target.upper():
+                return
+
+            extracted = facts.get("extracted")
+            if not isinstance(extracted, dict) or not isinstance(extracted.get("value"), str):
+                return
+            field_text = extracted["value"].strip()
+            if not field_text:
+                return
+
+            extraction_confidence = extracted.get("confidence")
+            has_ec = (
+                isinstance(extraction_confidence, (int, float))
+                and not isinstance(extraction_confidence, bool)
+            )
+            if has_ec and extraction_confidence < DEFAULT_MIN_CONFIDENCE:
+                # Don't ask the model to judge text we're not confident we read.
+                # Such a field is going to human review anyway (the AC-FR-06-02
+                # hard-pin, or a comparison-operator rule). Recorded for audit,
+                # no analyzer call.
+                self._write_skipped_ai_step(
+                    run, "LABEL", rule_version, subject_key,
+                    reason="low_extraction_confidence",
+                    extra_trace={"extraction_confidence": extraction_confidence},
+                )
+                return
+
+            ec_clause = f" (extraction confidence {extraction_confidence:.2f})" if has_ec else ""
+            self._run_semantic_hop(
+                run, question=SemanticQuestion.LABEL_SATISFACTION, dimension="LABEL",
+                rule_version=rule_version, requirement_version=requirement_version,
+                subject_key=subject_key, subject_text=field_text,
+                proposes_on_holds=False,
+                observed_value=extracted["value"],
+                observed_location=facts.get("location"),
+                finding_summary=(
+                    f"this label field's text does not substantively satisfy "
+                    f"the requirement{ec_clause}."
+                ),
+                extra_trace={"extraction_confidence": extraction_confidence} if has_ec else None,
+                correlation_id=correlation_id,
+            )
+
+    def _semantic_threshold(self, question: SemanticQuestion) -> float:
+        if question == SemanticQuestion.LABEL_SATISFACTION:
+            return self.label_semantic_confidence_threshold
+        return self.claim_semantic_confidence_threshold
+
+    def _write_skipped_ai_step(
+        self, run, dimension, rule_version, subject_key, *, reason, extra_trace=None,
+    ) -> None:
+        hop_facts = {"skipped": reason}
+        step = StepRun(
+            assessment_run_id=run.id, dimension=dimension,
+            step_type=StepType.AI_ANALYSIS.value, rule_version_id=rule_version.id,
+            subject_key=subject_key, input_facts=hop_facts,
+            input_hash=self.hash_facts(hop_facts), status=StepRunStatus.COMPLETED.value,
+            outcome="NO_MATCH",
+            trace=[{"step": "ai_semantic", "skipped": reason, **(extra_trace or {})}],
+        )
+        self.step_runs.create(step)
+        self.db.commit()
+
+    def _run_semantic_hop(
+        self, run, *, question, dimension, rule_version, requirement_version,
+        subject_key, subject_text, proposes_on_holds, observed_value,
+        observed_location, finding_summary, extra_trace=None, correlation_id=None,
+    ) -> None:
+        requirement_statement = requirement_version.canonical_statement
         hop_facts = {
+            "question": question.value,
             "requirement_statement": requirement_statement,
-            "claim_text": claim_text,
+            "subject_text": subject_text,
         }
         step = StepRun(
             assessment_run_id=run.id,
@@ -972,9 +1076,9 @@ class AssessmentRunService:
 
         try:
             ai_result = self.semantic_analyzer.assess(
-                question=SemanticQuestion.CLAIM_EQUIVALENCE,
+                question=question,
                 requirement_statement=requirement_statement,
-                subject_text=claim_text,
+                subject_text=subject_text,
             )
         except AiAnalyzerUnavailable as exc:
             # Graceful degradation: recorded on THIS StepRun only. The
@@ -987,60 +1091,62 @@ class AssessmentRunService:
             step.unknown_reason = "ai_unavailable"
             step.error_message = f"semantic analyzer unavailable ({exc.reason})"
             step.trace = [{
-                "step": "ai_semantic",
-                "question": SemanticQuestion.CLAIM_EQUIVALENCE.value,
-                "unavailable_reason": exc.reason,
+                "step": "ai_semantic", "question": question.value,
+                "unavailable_reason": exc.reason, **(extra_trace or {}),
             }]
             self.step_runs.create(step)
             self.db.commit()
             return
 
-        proposes = (
-            ai_result.holds
-            and ai_result.confidence >= self.claim_semantic_confidence_threshold
-        )
+        threshold = self._semantic_threshold(question)
+        proposes = (ai_result.holds == proposes_on_holds) and ai_result.confidence >= threshold
         step.outcome = "MATCH" if proposes else "NO_MATCH"
         step.trace = [{
             "step": "ai_semantic",
-            "question": SemanticQuestion.CLAIM_EQUIVALENCE.value,
+            "question": question.value,
             "model_identifier": ai_result.model_identifier,
             "prompt_version": ai_result.prompt_version,
             "holds": ai_result.holds,
             "confidence": ai_result.confidence,
-            "confidence_threshold": self.claim_semantic_confidence_threshold,
+            "confidence_threshold": threshold,
             "reasoning": ai_result.reasoning,
             "proposed_finding": proposes,
+            **(extra_trace or {}),
         }]
         self.step_runs.create(step)
         self.db.commit()
 
         if proposes:
             self._propose_semantic_finding(
-                run, rule_version, requirement_version, subject_key, claim_text,
-                ai_result, correlation_id=correlation_id,
+                run, dimension=dimension, rule_version=rule_version,
+                requirement_version=requirement_version, subject_key=subject_key,
+                observed_value=observed_value, observed_location=observed_location,
+                finding_summary=finding_summary, ai_result=ai_result,
+                correlation_id=correlation_id,
             )
 
     def _propose_semantic_finding(
-        self, run, rule_version, requirement_version, subject_key, claim_text, ai_result,
+        self, run, *, dimension, rule_version, requirement_version, subject_key,
+        observed_value, observed_location, finding_summary, ai_result,
         correlation_id: str | None = None,
     ) -> None:
         rationale = (
             f"AI semantic analysis (model={ai_result.model_identifier}, "
-            f"prompt={ai_result.prompt_version}, confidence={ai_result.confidence:.2f}): "
-            f"this claim is semantically equivalent to a prohibited claim. "
-            f"{ai_result.reasoning} "
+            f"prompt={ai_result.prompt_version}, model confidence={ai_result.confidence:.2f}): "
+            f"{finding_summary} {ai_result.reasoning} "
             f"AI-proposed - requires human review; not a final determination."
         )
         self.findings.propose(
             organization_id=run.organization_id,
             product_market_state_id=run.product_market_state_id,
-            dimension="CLAIMS",
+            dimension=dimension,
             assessment_run_id=run.id,
             requirement_version_id=rule_version.requirement_version_id,
             rule_version_id=rule_version.id,
             subject_key=subject_key,
             issue_type=requirement_version.obligation_type,
-            observed_value=claim_text,
+            observed_value=observed_value,
+            observed_location=observed_location,
             severity=requirement_version.default_severity,
             hard_gate_effect=requirement_version.is_hard_gate,
             rationale=rationale,
